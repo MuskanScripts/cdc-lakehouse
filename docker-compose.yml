@@ -1,0 +1,257 @@
+name: cdc-lakehouse
+
+# Week 1 stack: Postgres (logical WAL) -> Debezium (Kafka Connect) -> Kafka (KRaft) + Schema Registry
+# plus MinIO (S3 API) and a Spark client container for Week 2.
+# Needs ~6 GB RAM free for Docker.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_USER: ecom
+      POSTGRES_PASSWORD: ecom
+      POSTGRES_DB: ecom
+    command:
+      - postgres
+      - -c
+      - wal_level=logical            # required for logical replication / CDC
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_wal_senders=4
+      - -c
+      - max_slot_wal_keep_size=2GB   # protects disk if Debezium is down for hours
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecom -d ecom"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  kafka:
+    image: confluentinc/cp-kafka:7.7.1
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3          # CDC topics get 3 partitions, keyed by primary key
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server kafka:29092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.7.1
+    container_name: schema-registry
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: backward
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/subjects >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  connect:
+    build:
+      context: ./connect
+      args:
+        CP_VERSION: "7.7.1"
+        DEBEZIUM_VERSION: "2.7.3.Final"
+    image: cdc-lakehouse/connect:local
+    container_name: connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: kafka:29092
+      CONNECT_REST_ADVERTISED_HOST_NAME: connect
+      CONNECT_REST_PORT: 8083
+      CONNECT_GROUP_ID: cdc-connect
+      CONNECT_CONFIG_STORAGE_TOPIC: _connect_configs
+      CONNECT_OFFSET_STORAGE_TOPIC: _connect_offsets
+      CONNECT_STATUS_STORAGE_TOPIC: _connect_status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+      CONNECT_LOG4J_LOGGERS: org.reflections=ERROR
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    container_name: minio
+    user: "0:0"
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    image: cgr.dev/chainguard/minio-client:latest
+    container_name: minio-init
+    depends_on:
+      - minio
+    environment:
+      MC_HOST_local: http://minio:minio12345@minio:9000
+    command: ["mb", "--ignore-existing", "local/lakehouse"]
+    restart: on-failure
+
+  spark:
+    image: apache/spark:3.5.3-python3
+    container_name: spark
+    user: root
+    command: ["tail", "-f", "/dev/null"]   # client container; jobs are launched with spark-submit
+    environment:
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio12345
+    volumes:
+      - ./spark:/opt/project/spark
+      - ./streaming:/opt/project/streaming
+      - ./tests:/opt/project/tests
+      - ./simulator:/opt/project/simulator
+      - ivy_cache:/root/.ivy2
+    depends_on: [minio]
+
+  # Bronze + silver streaming queries in one driver JVM (profile `stream`: make stream-up).
+  streaming:
+    image: apache/spark:3.5.3-python3
+    container_name: streaming
+    user: root
+    profiles: ["stream"]
+    restart: unless-stopped
+    mem_limit: 2800m
+    working_dir: /opt/project
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    environment:
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio12345
+      PYTHONPATH: /opt/project
+      KAFKA_BOOTSTRAP: kafka:29092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      S3_ENDPOINT: http://minio:9000
+    volumes:
+      - ./streaming:/opt/project/streaming
+      - ivy_cache:/root/.ivy2
+    command:
+      - /opt/spark/bin/spark-submit
+      - --master
+      - local[4]
+      - --driver-memory
+      - 1500m
+      - --packages
+      - org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,org.apache.spark:spark-avro_2.12:3.5.3,io.delta:delta-spark_2.12:3.2.1,org.apache.hadoop:hadoop-aws:3.3.4
+      - --conf
+      - spark.jars.ivy=/root/.ivy2
+      - /opt/project/streaming/run_all.py
+
+  # Compares Postgres with silver (delta-rs, no JVM). Run via `make reconcile` / `make latency`.
+  reconcile:
+    build: ./chaos
+    image: cdc-lakehouse/chaos:local
+    container_name: reconcile
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: ecom
+      PGPASSWORD: ecom
+      PGDATABASE: ecom
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio12345
+      S3_ENDPOINT: http://minio:9000
+    volumes:
+      - ./chaos:/app
+
+  kafka-ui:
+    image: kafbat/kafka-ui:latest
+    container_name: kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: connect
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://connect:8083
+
+  simulator:
+    build: ./simulator
+    image: cdc-lakehouse/simulator:local
+    container_name: simulator
+    profiles: ["sim"]      # only runs via `make simulate`
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: ecom
+      PGPASSWORD: ecom
+      PGDATABASE: ecom
+
+volumes:
+  pg_data:
+  kafka_data:
+  minio_data:
+  ivy_cache:
