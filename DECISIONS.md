@@ -476,3 +476,30 @@ starts a build every 30 s (it sleeps `30 - build time`, at least 2 s).
 - Reconcile afterwards: 0 difference on all 5 tables.
 **Lesson.** "Works when I run it by hand" and "works in the service" can differ in process
 setup, not just config. Compare what PID 1 is, not only env and mounts.
+
+## ADR-028: Deletion vectors are NOT the fix for silver (probe result)
+**Experiment** (`make dv-probe`): two scratch copies of `silver/orders` (56,524 rows), one with
+`delta.enableDeletionVectors=true`. The same silver MERGE ran on both, 3 rounds, each round 400
+updates of random existing orders and 250 inserts. Silver itself was not touched; the copies
+were deleted afterwards.
+
+| per MERGE | plain | deletion vectors |
+|---|---|---|
+| rows copied | 56,123 / 56,373 / 56,623 | 0 / 0 / 0 |
+| `executionTimeMs` | 8.9 / 6.9 / 5.2 s | 21.6 / 10.5 / 7.6 s |
+| files after 3 rounds | 3 | 11 (+ DV files) |
+| protocol | reader 1 / writer 2 | reader 3 / writer 7, feature `deletionVectors` |
+| delta-rs 0.22.3 (reconcile, dbt plugin) | reads 57,274 rows, correct | `DeltaProtocolError: ... reader features {'deletionVectors'} ... not yet supported` |
+
+**Decision.** Do not enable deletion vectors on silver.
+**Why.** They remove the copying completely, but the MERGE got slower, not faster, and they would
+break every non-Spark reader we have. Turning them on is also a one-way protocol upgrade.
+**What this corrects in ADR-023.** Write amplification is real in rows (about 100x), but silver
+is about 2 MB per table, so rewriting it costs 2-5 s of a 5-13 s MERGE. The rest is fixed cost:
+the scan/join to find touched files, Spark job scheduling, S3 round trips, and CPU contention
+with four other MERGEs, bronze and the aggregate in the same JVM. Copying fewer rows doesn't
+remove any of that. Deletion vectors pay off when tables are large (GBs, rewrite-dominated);
+they don't here.
+**Next candidates, not done:** fewer, bigger MERGEs (longer trigger, or merging the five tables
+less often than bronze writes), and a key-range predicate in the ON clause to shrink the scan.
+Both need the same before/after measurement.

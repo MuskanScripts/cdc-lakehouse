@@ -1,4 +1,4 @@
-.PHONY: help up down clean ps logs register status topics consume simulate simulate-fast check spark-smoke psql slot-lag test stream-up stream-logs stream-down reconcile latency drift late-demo late-stats bronze-check chaos bench-silver table-stats optimize merge-profile thread-cpu gold-up gold-down gold-logs dbt-build dbt-test
+.PHONY: help up down clean ps logs register status topics consume simulate simulate-fast check spark-smoke psql slot-lag test stream-up stream-logs stream-down reconcile latency drift late-demo late-stats bronze-check chaos bench-silver table-stats optimize merge-profile thread-cpu dv-probe gold-up gold-down gold-logs dbt-build dbt-test
 
 TABLE ?= orders
 RATE  ?= 200
@@ -109,6 +109,13 @@ merge-profile:   ## Delta's own timings for the last N silver MERGEs (N=3): exec
 
 thread-cpu:      ## per-thread CPU of a java container over S seconds (C=streaming S=30)
 	./bench/thread_cpu.sh $(or $(C),streaming) $(or $(S),30)
+
+dv-probe:        ## deletion-vector probe on SCRATCH copies of silver/orders (silver untouched), then delta-rs read check
+	docker compose up -d spark
+	docker compose exec -T spark /opt/spark/bin/spark-submit --driver-memory 1500m \
+	  --packages io.delta:delta-spark_2.12:3.2.1,org.apache.hadoop:hadoop-aws:3.3.4 \
+	  --conf spark.jars.ivy=/root/.ivy2 /opt/project/spark/dv_probe.py
+	docker compose run --rm reconcile dv_read_check.py
 
 gold-up:         ## Week 4: dbt build loop (every 30 s) + dashboard on http://localhost:8501
 	docker compose --profile gold up -d --build dbt dashboard
