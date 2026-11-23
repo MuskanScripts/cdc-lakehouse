@@ -60,8 +60,10 @@ def live():
     placed = per_min["orders"].sum()
     refund_rate = refunds["refunds"].sum() / placed if placed else 0.0
     age = (pd.Timestamp.utcnow().tz_localize(None) - pd.Timestamp(info["built_at"])).total_seconds()
-    for a in health.gold_alerts(status, age):     # red banner above everything (ADR-027)
+    for a in health.gold_alerts(status, age):     # red banner above everything (ADR-027, ADR-029)
         st.error(a, icon="🚨")
+    for w in health.dq_warnings(status):          # yellow: freshness/volume warned, gold still published
+        st.warning(w)
 
     k = st.columns(5)
     k[0].metric(f"Net revenue, {WINDOW_MIN} min", f"₹{per_min['net_revenue'].sum():,.0f}")
@@ -86,7 +88,7 @@ def live():
     c4.bar_chart(by_city.set_index("city")[["net_revenue"]])
 
     st.subheader("Pipeline health")
-    h = st.columns(4)
+    h = st.columns(5)
     try:
         lag = health.kafka_lag(health.bronze_committed(), health.kafka_end_offsets())
         h[0].metric("Kafka lag (msgs not yet in bronze)", f"{lag:,}")
@@ -94,10 +96,14 @@ def live():
         h[0].metric("Kafka lag", "n/a")
         h[0].caption(f"{type(e).__name__}: {e}")
     q = health.quarantine_rows()
-    h[1].metric("Quarantined rows", f"{sum(q.values()):,}")
+    h[1].metric("Quarantined rows (decode)", f"{sum(q.values()):,}")
     h[1].caption(", ".join(f"{t}={n}" for t, n in q.items() if n) or "none")
-    h[2].metric("Latest order change in gold", f"{pd.Timestamp(info['max_order_updated_at']):%H:%M:%S}")
-    h[3].metric("Page rendered", time.strftime("%H:%M:%S", time.gmtime()))
+    dq = (status or {}).get("dq") or {}
+    dq_q = health.quarantine_rows(["dq"])["dq"]
+    h[2].metric("Data quality gate (last cycle)", dq.get("status", "n/a"))
+    h[2].caption(f"{len(dq.get('checks') or [])} checks; DQ quarantine (all time): {dq_q:,} rows")
+    h[3].metric("Latest order change in gold", f"{pd.Timestamp(info['max_order_updated_at']):%H:%M:%S}")
+    h[4].metric("Page rendered", time.strftime("%H:%M:%S", time.gmtime()))
 
 
 live()

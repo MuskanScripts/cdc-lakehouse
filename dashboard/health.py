@@ -49,6 +49,10 @@ def gold_alerts(status: dict | None, gold_age_s: float | None, max_age_s: float 
     alerts = []
     if status is None:
         alerts.append("No build status from the dbt loop (/data/last_build.json missing): is `make gold-up` running?")
+    elif status.get("status") == "BLOCKED":   # dbt was green, a blocking data quality check was not (ADR-029)
+        alerts.append(f"Gold publish BLOCKED by data quality at {status.get('finished_at', '?')}: "
+                      f"{status.get('summary', '')}. This page shows the last GOOD build, not current data. "
+                      "Fix the data at the source; see `make gold-logs` and `make dq`.")
     elif status.get("status") != "OK":
         alerts.append(f"Last dbt build FAILED at {status.get('finished_at', '?')}: {status.get('summary', '')}. "
                       "This page shows the last GOOD build, not current data. See `make gold-logs`.")
@@ -57,6 +61,20 @@ def gold_alerts(status: dict | None, gold_age_s: float | None, max_age_s: float 
     elif gold_age_s > max_age_s:
         alerts.append(f"Gold is {gold_age_s:.0f}s old (limit {max_age_s:.0f}s): numbers below are stale.")
     return alerts
+
+
+def dq_warnings(status: dict | None) -> list:
+    """Yellow-banner messages: non-blocking DQ checks (freshness, volume) that warned in the last
+    cycle. They never stop a publish (ADR-030)."""
+    dq = (status or {}).get("dq") or {}
+    if not dq.get("warned"):
+        return []
+    values = {c.get("name"): c.get("value") for c in dq.get("checks") or []}
+    parts = []
+    for n in dq["warned"]:
+        v = values.get(n)
+        parts.append(f"{n} = {v:.1f}" if isinstance(v, (int, float)) else n)
+    return ["Data quality warning (gold still published): " + ", ".join(parts)]
 
 
 def read_status(path: str):
@@ -113,11 +131,12 @@ def kafka_end_offsets(prefix: str = "ecom.public.") -> dict:
         c.close()
 
 
-def quarantine_rows() -> dict:
-    """Rows per quarantine table, from the Delta log's per-file row counts (no data read)."""
+def quarantine_rows(tables=None) -> dict:
+    """Rows per quarantine table, from the Delta log's per-file row counts (no data read).
+    `dq` is the data-quality quarantine written by Airflow's dq_checks (ADR-029)."""
     from deltalake import DeltaTable
     out = {}
-    for t in QUARANTINE_TABLES:
+    for t in tables or QUARANTINE_TABLES:
         try:
             acts = DeltaTable(f"s3://{BUCKET}/quarantine/{t}").get_add_actions(flatten=True).to_pydict()
             out[t] = int(sum(x or 0 for x in acts.get("num_records", [])))

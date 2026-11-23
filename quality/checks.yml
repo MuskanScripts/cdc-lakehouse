@@ -1,0 +1,78 @@
+# Data quality suite (Soda Core, SodaCL). Run by quality/dq.py in two places (ADR-029):
+#   - the gold gate: on the tables dbt just built, before every publish (the 30 s loop and
+#     Airflow's dbt_run). Any FAIL = gold is not published.
+#   - Airflow's dq_checks DAG: on silver itself, every 5 min; record-level failures are written to
+#     s3://lakehouse/quarantine/dq and alerted.
+#
+# Severity (ADR-030): a check with only `warn:` alerts but never blocks. Everything else blocks.
+#   blocks: keys, uniqueness, money >= 0, status in the allowed set, every order has a user
+#   warns:  freshness and volume. A late or quiet source does not make gold WRONG, and blocking would
+#           only make gold staler.
+#
+# `failed rows` checks are the record-level rules: dq.py re-runs the same condition/query to
+# quarantine the exact rows. Tables are stg_* (current state, no tombstones) in both modes.
+# Variables (filled by dq.py from Postgres): SRC_ORDERS_MAX = max(orders.updated_at) in the source.
+
+checks for stg_orders:
+  - row_count > 0:
+      name: orders_not_empty
+  - missing_count(order_id) = 0:
+      name: orders_order_id_not_null
+  - missing_count(user_id) = 0:
+      name: orders_user_id_not_null
+  - duplicate_count(order_id) = 0:
+      name: orders_order_id_unique
+  - failed rows:
+      name: orders_total_non_negative
+      fail condition: total < 0 or total is null
+  - failed rows:
+      name: orders_status_allowed
+      fail condition: status is null or status not in ('created', 'paid', 'shipped', 'delivered', 'cancelled', 'refunded')
+  - failed rows:
+      name: orders_have_a_user
+      # 5 min grace: silver users and orders are separate Delta tables committed independently,
+      # so a new user's first order can be visible one batch earlier (same rule as the dbt test)
+      fail query: |
+        select o.* from stg_orders o
+        left join stg_users u on u.user_id = o.user_id
+        where u.user_id is null and o.created_at < now()::timestamp - interval 5 minute
+  - orders_source_lag_s:
+      name: orders_freshness_vs_source
+      # seconds the newest order change here is behind the newest one in Postgres. Compared with the
+      # SOURCE, not the wall clock: an idle simulator is not a stale pipeline.
+      orders_source_lag_s query: |
+        select coalesce(date_diff('second', max(updated_at), timestamp '${SRC_ORDERS_MAX}'), 0)
+        from stg_orders
+      warn: when > 300
+  - orders_volume_z:
+      name: orders_volume_vs_trailing_hours
+      # |orders in the last 60 min - mean| / stddev over the previous 24 one-hour windows that had
+      # orders. 0 (= not judged) with fewer than 6 such windows.
+      orders_volume_z query: |
+        with h as (
+          select cast(floor(date_diff('second', created_at, now()::timestamp) / 3600) as int) as ago,
+                 count(*) as n
+          from stg_orders
+          where created_at >= now()::timestamp - interval 25 hour
+          group by 1),
+        cur as (select coalesce(sum(n) filter (where ago = 0), 0) as c from h),
+        hist as (select n from h where ago between 1 and 24)
+        select case when count(*) < 6 or coalesce(stddev_samp(n), 0) = 0 then 0
+                    else abs((select c from cur) - avg(n)) / stddev_samp(n) end
+        from hist
+      warn: when > 3
+
+checks for stg_payments:
+  - missing_count(payment_id) = 0:
+      name: payments_payment_id_not_null
+  - duplicate_count(payment_id) = 0:
+      name: payments_payment_id_unique
+  - failed rows:
+      name: payments_amount_non_negative
+      fail condition: amount < 0 or amount is null
+
+checks for stg_users:
+  - missing_count(user_id) = 0:
+      name: users_user_id_not_null
+  - duplicate_count(user_id) = 0:
+      name: users_user_id_unique

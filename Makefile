@@ -1,8 +1,10 @@
-.PHONY: help up down clean ps logs register status topics consume simulate simulate-fast check spark-smoke psql slot-lag test stream-up stream-logs stream-down reconcile latency drift late-demo late-stats bronze-check chaos bench-silver table-stats optimize merge-profile thread-cpu dv-probe gold-up gold-down gold-logs dbt-build dbt-test
+.PHONY: help up down clean ps logs register status topics consume simulate simulate-fast check spark-smoke psql slot-lag test stream-up stream-logs stream-down reconcile latency drift late-demo late-stats bronze-check chaos bench-silver table-stats optimize merge-profile thread-cpu dv-probe gold-up gold-down gold-logs dbt-build dbt-test airflow-up airflow-down airflow-logs monitoring-up monitoring-down dq gold-cycle bad-batch bad-batch-fix silver-damage backfill optimize-dag kafka-ui stats
 
 TABLE ?= orders
 RATE  ?= 200
 DURATION ?= 0
+ALL_PROFILES := --profile sim --profile stream --profile gold --profile orchestration --profile monitoring --profile ui
+export DOCKER_GID := $(shell stat -c %g /var/run/docker.sock 2>/dev/null || echo 1001)
 
 help:            ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n",$$1,$$2}'
@@ -12,10 +14,10 @@ up:              ## start the stack and register the Debezium connector
 	./scripts/register_connector.sh
 
 down:            ## stop containers (keeps data)
-	docker compose --profile sim down
+	docker compose $(ALL_PROFILES) down
 
 clean:           ## stop and delete all data volumes
-	docker compose --profile sim down -v
+	docker compose $(ALL_PROFILES) down -v
 
 ps:              ## container status
 	docker compose ps
@@ -59,6 +61,8 @@ test:            ## all unit tests, inside the spark container (has Java + PySpa
 	docker compose up -d spark
 	docker compose exec -T -e PYTHONPATH=/opt/project:/opt/spark/python:/opt/spark/python/lib/py4j-0.10.9.7-src.zip spark \
 	  bash -c "pip install -q pytest faker 'psycopg[binary]' 2>&1 | tail -1; cd /opt/project && python3 -m pytest -q -p no:cacheprovider tests"
+	@echo "--- data quality tests (Soda venv in the gold image)"
+	docker compose --profile gold run --rm --no-deps -T dbt /opt/soda/bin/python -m pytest -q -p no:cacheprovider /quality/tests
 
 stream-up:       ## start bronze + silver streaming (one Spark driver, restarts on failure)
 	docker compose --profile stream up -d streaming
@@ -139,3 +143,55 @@ dbt-test:        ## dbt tests only, full output; pauses the loop
 slot-lag:        ## WAL retained by the Debezium slot (alert on this in prod)
 	docker compose exec postgres psql -U ecom -d ecom -c \
 	  "SELECT slot_name, active, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)) AS lag FROM pg_replication_slots;"
+
+# ------------------------------------------------------------------ Week 5
+
+airflow-up:      ## Airflow (scheduler + webserver, LocalExecutor) on http://localhost:8088, admin / admin
+	docker compose --profile orchestration up -d airflow
+
+airflow-down:    ## stop Airflow
+	docker compose --profile orchestration stop airflow
+
+airflow-logs:    ## follow Airflow (scheduler + webserver) logs
+	docker compose logs -f --tail 50 airflow
+
+monitoring-up:   ## Prometheus :9090 + Grafana :3000 (admin / lakehouse) + pipeline exporter
+	docker compose --profile gold build dbt
+	docker compose --profile monitoring up -d pipeline-exporter prometheus grafana
+
+monitoring-down: ## stop Prometheus, Grafana and the exporter
+	docker compose --profile monitoring stop pipeline-exporter prometheus grafana
+
+dq:              ## run the data quality suite once on SILVER, no quarantine (SOURCE=build checks the last build file)
+	docker compose --profile gold exec -T dbt /opt/soda/bin/python /quality/dq.py --source $(or $(SOURCE),silver)
+
+gold-cycle:      ## one gold cycle by hand: dbt build -> DQ gate -> publish (waits for the loop's turn)
+	docker compose --profile gold exec -T dbt bash /dbt/cycle.sh manual
+
+bad-batch:       ## DRILL: write 5 orders with NEGATIVE totals into Postgres (drops the CHECK; undo with bad-batch-fix)
+	docker compose exec -T postgres psql -U ecom -d ecom < quality/bad_batch.sql
+
+bad-batch-fix:   ## DRILL recovery: correct the bad orders at the source and restore the CHECK constraint
+	docker compose exec -T postgres psql -U ecom -d ecom < quality/bad_batch_fix.sql
+
+silver-damage:   ## DRILL: delete every Nth key from a silver table (TABLE=orders N=50), streaming paused; repair with `make backfill`
+	docker compose --profile stream stop streaming
+	docker compose up -d spark
+	docker compose exec -T spark /opt/spark/bin/spark-submit --driver-memory 1500m \
+	  --packages io.delta:delta-spark_2.12:3.2.1,org.apache.hadoop:hadoop-aws:3.3.4 \
+	  --conf spark.jars.ivy=/root/.ivy2 /opt/project/spark/damage_silver.py $(TABLE) $(or $(N),50) ; \
+	  rc=$$?; docker compose --profile stream up -d streaming; exit $$rc
+
+backfill:        ## trigger the Airflow backfill_silver DAG (TABLE=orders START=2026-11-01 END=today)
+	docker compose --profile orchestration exec -T airflow airflow dags trigger backfill_silver \
+	  -c '{"table": "$(TABLE)", "start_date": "$(or $(START),2026-11-01)", "end_date": "$(or $(END),$(shell date -u +%F))"}'
+
+optimize-dag:    ## trigger the nightly Airflow optimize DAG now
+	docker compose --profile orchestration exec -T airflow airflow dags trigger optimize
+
+kafka-ui:        ## start Kafka UI on :8080 (not part of `make up` since Week 5, to save memory)
+	docker compose --profile ui up -d kafka-ui
+
+stats:           ## memory: WSL total + docker stats for every container
+	@free -h
+	@docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}'

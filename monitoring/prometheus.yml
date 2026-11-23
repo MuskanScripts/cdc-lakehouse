@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  - job_name: pipeline          # monitoring/exporter.py: Kafka lag, quarantine, slot lag, gold + DQ
+    static_configs:
+      - targets: ["pipeline-exporter:9108"]
+  - job_name: spark_streaming   # streaming/common/metrics.py inside the driver: batch duration, rows/s
+    static_configs:
+      - targets: ["streaming:9109"]
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

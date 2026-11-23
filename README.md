@@ -4,13 +4,15 @@
 > MERGE it into a Delta lakehouse, enforce quality gates, and serve live revenue and refund
 > numbers that match the source exactly, even after crashes, schema changes and late events.
 
-**Status:** Week 4 of 6. Capture (Postgres → Debezium → Kafka), bronze and silver
+**Status:** Week 5 of 6. Capture (Postgres → Debezium → Kafka), bronze and silver
 (Kafka → Delta on MinIO, idempotent MERGE), schema drift, an event-time aggregate with a
-late-event table, a chaos test, and a gold layer (dbt-duckdb: fact_orders, SCD2 dim_user,
-revenue per minute × city) behind a live dashboard on http://localhost:8501. `make reconcile`
-shows 0 difference against Postgres on all 5 tables after every run so far, including two runs
-with 10 random SIGKILLs each. Known limit: every silver MERGE rewrites the whole table, so
-throughput drops as tables grow (ADR-023; the fix is not done yet).
+late-event table, a chaos test, a gold layer (dbt-duckdb: fact_orders, SCD2 dim_user,
+revenue per minute × city) behind a live dashboard on http://localhost:8501, and now a **data
+quality gate** (Soda) that blocks any gold publish with bad data, **Airflow** for DQ, nightly
+OPTIMIZE/VACUUM and backfills, and **Prometheus + Grafana**. `make reconcile` shows 0 difference
+against Postgres on all 5 tables after every run so far, including two runs with 10 random SIGKILLs
+each, a bad-batch drill and a silver repair from bronze. Known limit: silver MERGE throughput
+(ADR-023/028); a trigger-interval experiment is planned for Week 6.
 
 ```
  Simulator ──► Postgres 16 ──WAL──► Debezium ──► Kafka (KRaft) ──► Spark Structured Streaming
@@ -18,7 +20,7 @@ throughput drops as tables grow (ADR-023; the fix is not done yet).
                                                    (Avro, BACKWARD)       ▼
                                                               Delta on MinIO: bronze → silver → gold
                                                                           │            (weeks 2–4)
-                                                              dbt · Airflow · GE/Soda · Trino · Metabase
+                                          dbt-duckdb + Soda gate · Streamlit · Airflow · Prometheus/Grafana
 ```
 
 ## Quick start
@@ -33,7 +35,7 @@ make check                   # Week-1 acceptance: c/u/d events on every table's 
 make stream-up               # Week 2: start bronze + silver (one Spark driver, ~2.7 GB)
 make reconcile WAIT=300      # Postgres vs silver; retries while silver catches up; exit 1 on any diff
 make latency MINUTES=5       # end-to-end p50/p95/p99 over the last 5 minutes
-make test                    # 24 unit tests (run inside the spark container)
+make test                    # 42 unit tests (spark container + the DQ venv in the gold image)
 
 # Week 3
 make drift                   # ALTER TABLE orders ADD COLUMN coupon_code, time it until silver has it
@@ -47,6 +49,19 @@ make gold-up                 # dbt build loop (every 30 s) + dashboard → http:
 make gold-logs               # one line per build: OK / FAILED (a failed build is not published)
 make dbt-build / dbt-test    # one build / tests only, full dbt output (pauses the loop)
 
+# Week 5
+make airflow-up              # Airflow → http://localhost:8088 (admin / admin): dq_checks, dbt_run, optimize, backfill_silver
+make monitoring-up           # Prometheus :9090 + Grafana → http://localhost:3000 (admin / lakehouse)
+make dq                      # Soda suite once on silver (SOURCE=build: on the last gold build)
+make gold-cycle              # one build -> DQ gate -> publish by hand
+make bad-batch               # DRILL: 5 negative-total orders into Postgres -> gold blocked, alert, quarantine
+make bad-batch-fix           # fix them at the source -> next cycle publishes again
+make silver-damage N=50      # DRILL: delete every 50th order from silver (streaming paused)
+make backfill TABLE=orders   # Airflow backfill_silver: repair silver from bronze (START=, END=)
+make optimize-dag            # run the nightly OPTIMIZE ZORDER + VACUUM DAG now
+make stats                   # free -h + docker stats for every container
+make kafka-ui                # Kafka UI on :8080 (no longer started by `make up`)
+
 # performance tooling
 make bench-silver LABEL=x    # silver batch times at 50 changes/s for 3 min → bench/silver_bench.log
 make table-stats             # active files + avg file size per silver table
@@ -56,8 +71,21 @@ make optimize                # stop streaming, OPTIMIZE + VACUUM 168h, start str
 ```
 
 `make stream-up` is separate from `make up` because the Spark driver is the biggest memory
-consumer (4 GB limit, ~3.5 GiB used once warm). The full stack with gold uses about 7.1 GiB of
-WSL's 9.7; stop `kafka-ui` if memory gets tight.
+consumer (4 GB limit, ~3.5 GiB used once warm). Everything together (stream + gold +
+orchestration + monitoring) used 7.1 GiB of WSL's 9.7 under load (table in "Week 5" below).
+Each Week 5 profile starts on its own: `make airflow-up` or `make monitoring-up`.
+
+### Data quality and Airflow (Week 5)
+
+Every gold cycle is `dbt build` → **DQ gate** (`quality/checks.yml`, Soda, on the tables just
+built) → atomic publish. The 30 s loop and Airflow's `dbt_run` run the same script and take turns
+on a lock (ADR-029). Blocking checks: null/duplicate keys, `total >= 0`, `amount >= 0`, status in
+the allowed set, every order has a user. Freshness (silver vs Postgres) and volume (last hour vs
+trailing hours) only warn (ADR-030). A blocked cycle keeps the last good gold, turns the
+dashboard banner red and Grafana's "Gold: last cycle" to BLOCKED. Airflow's `dq_checks` writes
+the offending rows to `s3://lakehouse/quarantine/dq` and alerts: to Slack if
+`SLACK_WEBHOOK_URL` is set (export it before `make airflow-up`), otherwise to the task log and
+`/opt/airflow/logs/alerts.log`.
 
 ### The dashboard (http://localhost:8501, after `make gold-up`)
 
@@ -89,7 +117,11 @@ aggregate, `withWatermark(event_time, '10 minutes')`).
 
 | UI | URL | Login |
 |---|---|---|
-| Kafka UI (topics, schemas, connector) | http://localhost:8080 | – |
+| Gold dashboard (Streamlit) | http://localhost:8501 | – |
+| Airflow (`make airflow-up`) | http://localhost:8088 | admin / admin |
+| Grafana (`make monitoring-up`) | http://localhost:3000 | admin / lakehouse |
+| Prometheus | http://localhost:9090 | – |
+| Kafka UI (`make kafka-ui`) | http://localhost:8080 | – |
 | MinIO console | http://localhost:9001 | minio / minio12345 |
 | Kafka Connect REST | http://localhost:8083/connectors/ecom-postgres/status | – |
 | Schema Registry | http://localhost:8081/subjects | – |
@@ -132,9 +164,13 @@ dbt/                     dbt-duckdb project: staging, users_snapshot (SCD2), fac
                          agg_revenue_minute, agg_refunds_minute, tests; run_loop.sh; image Dockerfile
 dashboard/               Streamlit app.py, health.py (Kafka lag, quarantine), snapshot.py (headless check)
 bench/                   silver_bench.sh, thread_cpu.sh, silver_bench.log
-spark/optimize.py        OPTIMIZE + VACUUM job
-airflow/  quality/       DAGs, DQ suites                              (week 5)
-monitoring/              Prometheus+Grafana                            (week 5)
+spark/                   optimize.py (OPTIMIZE [ZORDER] + VACUUM), exclusive.sh (one writer job at a time),
+                         damage_silver.py (drill)
+streaming/backfill_silver.py  silver repair/rebuild from bronze, trigger(availableNow=True)
+quality/                 checks.yml (Soda), dq.py (gate + silver scan + quarantine), bad-batch drill SQL, tests/
+dbt/cycle.sh             one gold cycle: build -> DQ gate -> publish (loop + Airflow, flock)
+airflow/                 start.sh, dags/lakehouse_dags.py (4 DAGs), dags/lakehouse_lib.py (docker exec, pause, alert)
+monitoring/              exporter.py, prometheus.yml, grafana/ (provisioned datasource + dashboard)
 DECISIONS.md             architecture decision records
 ```
 
@@ -225,6 +261,49 @@ Inside a 10.4 s MERGE: 5.4 s scan, 3.7 s rewrite. The JVM used about 4.7 cores a
 VACUUM RETAIN 168 HOURS deleted nothing (all replaced files are under 7 days old). Fix options
 are in ADR-023; none is applied yet.
 
+### Week 5
+
+**Bad-batch drill** (`make bad-batch` with the simulator at 50 changes/s; log of one run, UTC):
+
+| time | what happened |
+|---|---|
+| 19:08:26 | 5 orders with negative totals committed in Postgres (62053-62057, CHECK dropped by the drill) |
+| 19:10:13 | Airflow `dq_checks` (scheduled) on silver: `DQ FAIL \| blocking: orders_total_non_negative=5`, **5 rows written to `quarantine/dq`** with their LSNs, alert logged |
+| 19:10:21 | gold loop: `build OK ... but gold NOT published \| DQ FAIL \| blocking: orders_total_non_negative=5` (**121 s** after the insert: CDC + silver latency + one cycle) |
+| 19:10:39 | Airflow `dbt_run` blocked the same way, task FAILED, alert logged |
+| 19:11:04 | dashboard: red banner "Gold publish BLOCKED by data quality ... orders_total_non_negative=5 ... last GOOD build"; DQ gate tile FAIL |
+| 19:13:50 | gold still the 19:09:46 build: 60,066 orders, 0 negative totals, while Postgres grew to 62,286. Prometheus: `last_cycle_status=1`, `dq_gate_status=2`, published age 226 s |
+| 19:13:50 | `make bad-batch-fix`: totals corrected at the source, CHECK constraint restored |
+| 19:14:55 | first OK cycle, **66 s** after the fix: published, 62,317 orders, 0 negative; banner gone; Prometheus back to 0/0 |
+| 19:15:19 | Airflow `dq_checks` green again; a rerun while blocked reported "quarantined 0 new of 5" (no duplicates) |
+
+| What | Result | How |
+|---|---|---|
+| DQ gate cost | 14 checks in 1.1-3.4 s per cycle; cycles 14-45 s | `make gold-logs` |
+| DQ on silver (Airflow) | 2.5-12.6 s | `dq_checks` task log |
+| Backfill repair | `make silver-damage N=50` deleted 1,305 silver rows → reconcile: 1,249 orders missing, ₹107.7M short. `backfill_silver` (Airflow, orders, 2026-11-01..23): 183,110 bronze rows in 1 batch, 47.5 s, silver +1,305 rows → **reconcile 0 / 0 / 0 / 0** on all 5 tables. Streaming paused 79 s | `make backfill TABLE=orders` |
+| Nightly optimize DAG | streaming paused 10 min 15 s; OPTIMIZE ZORDER 2.5-12 s per table (orders 5 files → 1, order_items 18 → 1), VACUUM 53-127 s per table, deleted 0 (all files < 7 days) | `make optimize-dag` |
+| Airflow restart during optimize (after the ADR-033 fix) | retry stopped the orphaned Spark job, one writer, streaming resumed, task SUCCESS | `docker restart airflow` mid-job |
+| Reconcile after everything | 0 / 0 / 0 / 0 on all 5 tables (64,874 orders) | `make reconcile` |
+| Streaming metrics (Prometheus) at 50/s | batch duration bronze 11.7 s, silver 28.0 s, orders_per_minute 8.5 s; silver 60 rows/s processed | listener on :9109 |
+| `make test` | **42 passed** (30 in the spark container, 12 DQ tests in the Soda venv) | `make test` |
+
+**Memory, whole stack under load** (simulator 50/s, streaming + gold + Airflow + monitoring,
+kafka-ui off): WSL **7.1 GiB used of 9.7, 2.6 available**, swap 1.3 GiB. streaming 3.56 / 3.9 GiB,
+airflow 0.87 / 1.47 GiB, connect 0.80, minio 0.60, kafka 0.53, schema-registry 0.24, dbt 0.19 / 1,
+postgres 0.15, pipeline-exporter 0.11 / 0.25, grafana 0.07 / 0.3, prometheus 0.04 / 0.3, dashboard 0.05,
+spark (idle client) 0.19 (`make stats`). During optimize/backfill the spark container runs a
+1.5 GB-heap JVM, but streaming is stopped then. The streaming driver's margin is still only about
+0.35 GiB.
+
+What I'd call out honestly:
+- Airflow's first start ran a missed nightly `optimize` immediately and exposed a real bug
+  chain (orphaned Spark writers, streaming left stopped). Silver was not damaged (reconcile 0), but
+  it was luck that the job was OPTIMIZE. Fixed and re-tested; see ADR-033.
+- Airflow masks the string "airflow" in task logs (it is the metadata DB password), so the
+  trigger label shows as `[***]`. Cosmetic.
+- Slack delivery is untested: no webhook was configured, so alerts went to the log path only.
+
 ## Troubleshooting
 
 - **Connector FAILED**: check `make logs`. The usual cause is Postgres not running with
@@ -249,6 +328,15 @@ are in ADR-023; none is applied yet.
   service still has `init: true` (ADR-027).
 - **`make dbt-test` / `make dbt-build` while the loop runs**: they pause the loop themselves,
   because DuckDB allows only one writer.
+- **Red banner "Gold publish BLOCKED by data quality"**: a blocking Soda check failed on the last
+  build (it names the check and the row count). `make dq` shows it on silver; the rows are in
+  `quarantine/dq` after the next Airflow `dq_checks`. Fix the data at the source; the next cycle
+  publishes. After a drill, run `make bad-batch-fix`.
+- **Streaming stopped and Airflow was restarted mid-job**: the next attempt of `optimize` /
+  `backfill_silver` resumes it (Airflow Variable `streaming_paused_by_airflow`). If Airflow is gone
+  for good: `make stream-up` and `docker exec spark bash /opt/project/spark/exclusive.sh --kill`.
+- **Airflow can't reach Docker** (`permission denied ... docker.sock`): start it with
+  `make airflow-up`, which passes the socket's group id (`DOCKER_GID`).
 - **`make drift` says the column already exists**: the drill only means something the first time;
   use `make drift COL=other_name` (or `TBL=products`).
 - **Decimal fields look like `"\u0004Ò"`** in the console consumer: Avro `decimal` is

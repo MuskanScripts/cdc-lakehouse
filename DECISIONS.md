@@ -502,4 +502,153 @@ remove any of that. Deletion vectors pay off when tables are large (GBs, rewrite
 they don't here.
 **Next candidates, not done:** fewer, bigger MERGEs (longer trigger, or merging the five tables
 less often than bronze writes), and a key-range predicate in the ON clause to shrink the scan.
-Both need the same before/after measurement.
+Both need the same before/after measurement. **Decision (Week 5):** parked until Week 6, where
+measuring a 30 s and a 60 s silver trigger before/after is now a listed task.
+
+## ADR-029: Who does what: the 30 s gold loop, Airflow, and the DQ gate
+**Decision.** The 30 s loop stays the fast path for the dashboard. Gold publishing is one script,
+`dbt/cycle.sh`: `dbt build` → data quality gate (Soda, on the tables dbt just built) → atomic
+publish. Publish happens only if dbt's tests AND every blocking DQ check pass. The loop runs that
+script every 30 s. Airflow runs it too, plus everything that needs history, retries or a pause:
+
+| work | where | why there |
+|---|---|---|
+| build → DQ gate → publish, every 30 s | loop (`dbt` container) | Airflow can't do 30 s cheaply: every task is a new Python process, and the scheduler loop adds its own delay |
+| same cycle every 5 min (`dbt_run`) | Airflow | each run is a recorded, alertable event; if the loop dies, gold is still built |
+| DQ suite on silver every 5 min (`dq_checks`) | Airflow | owns the record-level quarantine (`quarantine/dq`) and the alert |
+| nightly OPTIMIZE ZORDER + VACUUM (`optimize`) | Airflow | needs streaming paused and resumed reliably, a retry and a log |
+| `backfill_silver` (table, start, end) | Airflow | parameters, a manual trigger, history |
+
+**Why the gate lives inside the cycle, not in Airflow.** If Airflow checked silver and the loop
+published whenever "the last DQ run was green", there would be a gap: data that arrived between the
+check and the build would be published unchecked. Inside the cycle the gate checks exactly the
+data it is about to publish. It also holds when Airflow is down, because the rule doesn't depend on it.
+**Why the two callers cannot collide.** DuckDB allows one writer, and the SCD2 snapshot history
+lives in the build file, so there must be exactly one build file. `cycle.sh` takes `flock` on
+`/data/gold.lock`; the Airflow run simply waits for the loop's current cycle.
+**How Airflow runs the work.** It doesn't install dbt, Soda or Spark. Tasks `docker exec` into the
+existing containers through the Docker socket (`lakehouse_lib.py`): DQ and cycles in `dbt`, Spark
+jobs in `spark`, pausing = `docker stop streaming`. That avoids dependency clashes (Airflow + dbt +
+Soda pin different protobufs) and a second copy of everything. The trade-off is that the Docker
+socket gives Airflow root-equivalent power over the host's Docker. Fine on a laptop, but in
+production I would use KubernetesPodOperator or ECS tasks instead.
+**Airflow itself.** One container: scheduler + webserver (1 gunicorn worker), LocalExecutor,
+metadata in a separate database `airflow` on the existing Postgres (created by `start.sh`).
+Rejected SQLite: it forces SequentialExecutor, so a 10 minute backfill would block every
+`dq_checks` run. Rejected `airflow standalone`: it resets the admin password on start and also runs
+a triggerer I don't need. Cost: Airflow's own writes go through the same Postgres WAL that Debezium
+decodes; it is small (heartbeats, task rows) and filtered out by the publication.
+**What a failed cycle looks like.** `last_build.json` gets `status = BLOCKED` with the failing
+check, the dashboard shows a red banner, Prometheus/Grafana show "BLOCKED by DQ", and Airflow's
+`dbt_run` task fails, which sends an alert. Gold keeps serving the last good build.
+**Rejected.** Running dbt only from Airflow every 5 min (the original plan): the dashboard would be
+up to 5 min stale. Letting Airflow pause the loop with a flag file: more moving parts than a lock.
+
+## ADR-030: Soda Core for data quality; correctness blocks, freshness and volume only warn
+**Choice: Soda Core over Great Expectations.** The checks are short YAML (`quality/checks.yml`),
+readable in an interview, and Soda talks to DuckDB directly (`scan.add_duckdb_connection`), so it
+checks the same in-memory tables in both modes. GE needs SQLAlchemy plus a duckdb dialect for that,
+and its project scaffolding (contexts, suites, checkpoints) is a lot of machinery for 14 checks.
+**Packaging problems I hit (each one a real error):** `soda-core-duckdb` 3.5.6 requires
+`duckdb<1.1` (pip silently downgraded to 1.0.0, while gold is written by 1.1.3); its OpenTelemetry
+dependency pins `protobuf<5`, which breaks `dbt-adapters`; 3.3.20 crashed on Python 3.12 with
+`No module named 'distutils'`. **Fix:** Soda lives in its own venv `/opt/soda` in the gold image,
+with `setuptools` (provides `distutils`) and duckdb force-installed at 1.1.3 with `--no-deps`. Soda
+only uses connect/execute, and all 12 DQ tests pass on that combination. Telemetry is off via
+`~/.soda/config.yml` (Soda's scan-level config does not accept that key).
+**The checks.** Blocking: no null/duplicate keys (orders, payments, users), `total >= 0`, `amount >= 0`,
+status in the allowed set, every order older than 5 min has a user. Warn only: freshness and
+volume. A blocking check that errors or is not evaluated counts as FAILED (fail closed); a crash
+of the runner also blocks.
+**Why freshness and volume don't block (a deliberate change to the plan).** Blocking gold because
+it is stale makes it staler: the next build would contain everything we have, just late. Late is
+not the same as wrong. They alert (yellow banner, Airflow warning, Grafana).
+**Freshness is measured against the SOURCE, not the wall clock:** newest `orders.updated_at` in
+Postgres minus newest in silver, warn above 300 s. "max(updated_at) within 5 min of now" would warn
+every time the simulator is idle, which is a quiet source, not a broken pipeline.
+**Volume:** |orders in the last 60 min − mean| / stddev over the previous 24 one-hour windows that
+had orders; warn above 3, and not judged with fewer than 6 such windows. "Same hour of day over
+past weeks" is the better baseline with seasonality, but this simulator has no daily pattern and
+only a few days of history; it is the upgrade once there is real traffic.
+**Record-level vs table-level.** Every `failed rows` rule is record-level: `dq.py` re-runs the
+rule's own condition and appends the rows to `s3://lakehouse/quarantine/dq` (check, table, pk,
+LSN, the row as JSON, run id), once per (check, key, LSN), so reruns don't duplicate. Any record
+failure also fails the table-level verdict, so gold is not published while bad rows exist.
+I chose "block" over "drop the bad rows and publish the rest" because these are money and
+correctness rules: a revenue number that silently excludes rows is worse than a stale one with a
+red banner. A threshold (block only above N bad rows) is the knob if that ever becomes too strict.
+**Where the quarantine is written.** Only Airflow's silver scan writes it (single writer, so
+delta-rs needs no lock service: `AWS_S3_ALLOW_UNSAFE_RENAME`, `max_active_runs=1`). The gate in the
+loop only reads.
+**Measured.** The gate takes 2.0-3.4 s for 14 checks per build (builds take 16-45 s). The silver
+scan takes 6.9 s idle and 12.6 s under load.
+
+## ADR-031: Monitoring: my own exporter + a listener in the driver, no kafka-exporter
+**Decision.** Prometheus (3 days retention, 300 MB limit) + Grafana (provisioned datasource and
+dashboard) under profile `monitoring`, with two metric sources:
+1. `monitoring/exporter.py` (gold image, 256 MB): Kafka lag per topic, quarantine rows per table
+   (incl. `dq`), replication slot lag, gold cycle status, published age, DQ gate and per-check state.
+2. `streaming/common/metrics.py`: a `StreamingQueryListener` in the streaming driver keeps each
+   query's last progress (batch duration, rows, rows/s) and serves it on :9109 from a stdlib
+   HTTP thread.
+**Why not kafka-exporter.** It reports consumer-GROUP lag. Spark's Kafka source does not commit
+offsets to a group (they live in the checkpoint), so the lag that matters would be empty.
+Lag = end offsets − offsets in the bronze checkpoint, the same unit-tested code the dashboard uses.
+**Why not the Spark Prometheus servlet.** It needs the Spark UI, which is disabled to save driver
+memory, and it does not expose per-query streaming progress as directly as the listener.
+A Pushgateway would be one more container for the same numbers.
+**Safety.** Every listener callback is wrapped in try/except: metrics can never fail the stream.
+The exporter reads each source independently and reports `lakehouse_exporter_source_up{source}`,
+so a Kafka restart doesn't blank the whole page.
+**Not done.** Grafana alert rules: the alert path is Airflow → Slack/log (ADR-029). Duplicating it
+in Grafana would mean two places to keep in sync.
+
+## ADR-032: backfill_silver replays bronze through the stream's own code
+**Decision.** `streaming/backfill_silver.py --table T --start D1 --end D2` reads bronze rows with
+`kafka_timestamp` in the range using `trigger(availableNow=True)` (process what is there, then
+stop), with a fresh checkpoint per run, and calls the stream's own `process_batch` (decode per
+schema id, dedup by LSN, soft-delete MERGE with the LSN guard). The Airflow DAG `backfill_silver`
+takes the three params, pauses streaming, runs it, resumes.
+**Why it is safe to run at any time:** the MERGE only changes a row when bronze has a higher LSN
+than silver, or the key is missing. Over healthy silver it changes nothing; over damaged silver it
+restores exactly the missing or stale keys. There is no "truncate and reload" step, so no window
+where silver is empty.
+**Left out on purpose:** quarantine writes (the stream already quarantined those bronze rows once,
+and the idempotent `txnVersion` would skip a backfill's batch ids anyway), and the event-time side
+output (late events are an append log, not state to rebuild).
+**Why streaming must pause:** two JVMs committing to the same Delta table on S3 without a commit
+coordinator can both "win" the same log version (ADR-023).
+
+## ADR-033: Incident: Airflow restarts left orphaned Spark writers and streaming stopped
+**What happened.** On its first start, Airflow ran the most recent missed `optimize` slot at once
+(`catchup=False` still runs the LATEST interval). While OPTIMIZE used every core, the webserver's
+gunicorn master missed its 120 s start timeout and shut down. My `start.sh` ended the container
+when either process exited, so the container restarted and the task process died with it.
+**But the `spark-submit` it had started with `docker exec` kept running.** Docker does not kill an
+exec'd process when the client goes away. The scheduler re-queued the "orphaned" task, the retry
+started a second OPTIMIZE, the extra load caused the next webserver timeout, and so on. After
+3 restarts there were **4 OPTIMIZE JVMs writing silver at once** (3.8 GiB, 560% CPU). Streaming
+stayed stopped: each retry saw it stopped and concluded "it wasn't running, don't resume".
+**Impact.** None on data, as far as I can measure: reconcile afterwards was 0 difference on all 5
+tables (54,734 orders). OPTIMIZE only rewrites files with the same rows, so concurrent commits
+could orphan files but not change data. With a MERGE or a backfill instead, this could have lost
+a commit. Streaming was down about 25 minutes.
+**Fixes (each one a link in the chain):**
+1. `start.sh`: only the scheduler's exit restarts the container; the webserver is restarted in a
+   loop on its own. `WEB_SERVER_MASTER_TIMEOUT` 120 → 300 s.
+2. `spark/exclusive.sh`: every writer job holds a lock in the spark container. A new job that finds
+   the lock held stops the holder first (TERM, KILL after 30 s); the Airflow pool already allows
+   only one writer task, so the holder can only be an orphan. A task that times out or gets
+   SIGTERM stops its job before resuming streaming.
+3. The pause is recorded in an Airflow Variable before `docker stop`. A retry that finds the marker
+   resumes at its end; the failure callback also stops leftovers and resumes.
+4. Maintenance Spark jobs run `local[2]`, leaving cores for Airflow, dbt and Postgres.
+5. A scheduled `optimize` more than 2 h after its slot is skipped; manual triggers always run.
+**Proof** (simulator at 50/s): triggered `optimize`, then `docker restart airflow` while the Spark
+job ran. Attempt 2 logged "streaming already paused by optimize manual__… (an earlier attempt)",
+`exclusive.sh: stopping writer job pid 6388`, then optimized all 5 tables with ONE JVM, resumed
+streaming, task SUCCESS, marker cleared. Streaming was paused 10 min 15 s, mostly VACUUM listing old
+files (53-127 s per table); OPTIMIZE itself took 2.5-12 s per table (orders 5 files → 1).
+**Lesson.** Whatever an orchestrator starts outside its own process tree, it has to be able to
+find and stop again, and "resume what I paused" has to survive the process that paused it. This is
+the ADR-027 lesson again from another side: what PID 1 does, and who owns a process, matter.

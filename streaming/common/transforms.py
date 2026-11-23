@@ -267,7 +267,8 @@ def _process_table(batch_df, table, ids, batch_id, schema_for, silver_root, quar
     if bad is not None:
         bad = bad.persist()
         quarantined = bad.count()
-        if quarantined:
+        # quarantine_root=None: a backfill replays bronze rows the stream already quarantined once
+        if quarantined and quarantine_root:
             write_quarantine(bad, f"{quarantine_root}/{table}", batch_id)
         bad.unpersist()
     return (f"{table}: merged={merged} quarantined={quarantined}{extra} "

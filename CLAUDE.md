@@ -28,7 +28,18 @@ events.
   and `list[str]` hints in anything that runs there.
 - Corporate laptop: if a download is blocked, stop and tell Rohit. Don't silently switch tools.
 
-## Current state (Weeks 1-4 DONE)
+## Current state (Weeks 1-5 DONE)
+**Week 5 (done):** gold cycle = `dbt/cycle.sh` (build → Soda DQ gate → publish, flock), run by the
+30 s loop and by Airflow `dbt_run` (ADR-029). Soda lives in venv `/opt/soda` in the gold image
+(ADR-030); freshness/volume only warn. Airflow (`make airflow-up`, :8088 admin/admin, profile
+`orchestration`, LocalExecutor, DB `airflow` on the same Postgres) runs tasks via `docker exec`
+over the Docker socket; DAGs dq_checks, dbt_run, optimize (nightly), backfill_silver (ADR-032).
+Spark writer jobs go through `spark/exclusive.sh`; pausing streaming is recorded in an Airflow
+Variable (ADR-033: incident with orphaned writers). Monitoring (`make monitoring-up`, Grafana
+:3000 admin/lakehouse): `monitoring/exporter.py` + listener in the driver on :9109 (ADR-031).
+kafka-ui is now profile `ui` (`make kafka-ui`). `make test` = 42. Whole stack under load: 7.1 of
+9.7 GiB. Drills: `make bad-batch` / `bad-batch-fix`, `make silver-damage` + `make backfill`.
+
 **Week 4 (done):** gold = dbt-duckdb (not dbt-spark, ADR-024) reading silver via the delta plugin,
 `make gold-up` runs a 30 s build loop (publishes `/data/gold.duckdb` by atomic rename only when
 all tests pass) + Streamlit dashboard on :8501 (not Metabase, ADR-024). SCD2 `users_snapshot` →
@@ -210,6 +221,10 @@ and `make reconcile` shows 0 difference on all 5 tables. Also measure end-to-end
   query's time before and after `OPTIMIZE`/`ZORDER`, then publish the real ratio in
   `bench/results.md`. Throughput: highest simulator rate where Kafka lag stays flat. Latency
   p50/p95.
+- Silver trigger (deferred from Week 4, ADR-023/028; do NOT tune silver before this): measure a
+  30 s and a 60 s silver trigger (`TRIGGER_INTERVAL`) against the current 10 s, before/after, same
+  workload (`make bench-silver`): batch time, MERGE `executionTimeMs`, Kafka lag trend, and
+  latency p50/p95. Keep the change only if the numbers justify it; record it as an ADR.
 - README: architecture diagram (Mermaid) at the top, a "Failure modes handled" section
   covering all 8 hard problems with how each is proven, a benchmark table, and a quick start a
   stranger can run in under 15 minutes (test this from a fresh clone with `make clean`).

@@ -159,6 +159,7 @@ services:
       - ./tests:/opt/project/tests
       - ./simulator:/opt/project/simulator
       - ./dashboard:/opt/project/dashboard
+      - ./monitoring:/opt/project/monitoring
       - ivy_cache:/root/.ivy2
     depends_on: [minio]
 
@@ -245,8 +246,15 @@ services:
       DBT_INTERVAL: "30"
       GOLD_BUILD_PATH: /data/gold_build.duckdb
       GOLD_SERVE_PATH: /data/gold.duckdb
+      # the DQ gate reads the source's newest change for its freshness check (ADR-030)
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: ecom
+      PGPASSWORD: ecom
+      PGDATABASE: ecom
     volumes:
       - ./dbt:/dbt
+      - ./quality:/quality      # Week 5: Soda checks + dq.py, run by cycle.sh and by Airflow (ADR-029)
       - gold_data:/data
     depends_on: [minio]
 
@@ -268,9 +276,111 @@ services:
       - gold_data:/data:ro
     depends_on: [dbt]
 
+  # Week 5 orchestration (profile `orchestration`: make airflow-up). One container, scheduler +
+  # webserver, LocalExecutor, metadata in database `airflow` on the same Postgres (ADR-029).
+  # Tasks run inside the stack's containers through the Docker socket (lakehouse_lib.py).
+  airflow:
+    image: apache/airflow:2.10.5-python3.12
+    container_name: airflow
+    profiles: ["orchestration"]
+    restart: unless-stopped
+    init: true                # ADR-027: never a shell as PID 1; also reaps LocalExecutor task processes
+    mem_limit: 1500m
+    user: "50000:0"
+    group_add: ["${DOCKER_GID:-1001}"]   # gid of /var/run/docker.sock (`make airflow-up` sets it)
+    command: ["bash", "/opt/airflow/start.sh"]
+    ports:
+      - "8088:8080"
+    environment:
+      # the image's entrypoint would wait for the metadata DB BEFORE start.sh can create it
+      CONNECTION_CHECK_MAX_COUNT: "0"
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "False"
+      AIRFLOW__CORE__PARALLELISM: "4"
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: utc
+      AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "60"
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "120"
+      AIRFLOW__WEBSERVER__WORKERS: "1"
+      AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT: "300"   # 120 s was missed under full CPU load (ADR-033)
+      AIRFLOW__WEBSERVER__WORKER_REFRESH_BATCH_SIZE: "0"    # no rolling gunicorn restarts (each one doubles memory)
+      AIRFLOW__WEBSERVER__SECRET_KEY: lakehouse-local-only
+      AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: UTC
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}               # unset -> alerts are logged only
+      SRC_PGHOST: postgres
+      SRC_PGUSER: ecom
+      SRC_PGPASSWORD: ecom
+      SRC_PGDATABASE: ecom
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/start.sh:/opt/airflow/start.sh:ro
+      - airflow_logs:/opt/airflow/logs
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Week 5 monitoring (profile `monitoring`: make monitoring-up), ADR-031.
+  pipeline-exporter:
+    image: cdc-lakehouse/gold:local
+    pull_policy: never        # built by the dbt service (same image)
+    container_name: pipeline-exporter
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    init: true
+    mem_limit: 256m
+    command: ["python", "/monitoring/exporter.py"]
+    environment:
+      <<: *gold_env
+      HEALTH_PATH: /app
+    volumes:
+      - ./monitoring:/monitoring:ro
+      - ./dashboard:/app:ro
+      - gold_data:/data:ro
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: prometheus
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    init: true
+    mem_limit: 300m
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=3d",
+              "--storage.tsdb.path=/prometheus"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: grafana
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    init: true
+    mem_limit: 300m
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: lakehouse
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/lakehouse.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on: [prometheus]
+
   kafka-ui:
     image: kafbat/kafka-ui:latest
     container_name: kafka-ui
+    profiles: ["ui"]          # Week 5: no longer started by `make up` (memory); `make kafka-ui`
     depends_on:
       kafka:
         condition: service_healthy
@@ -304,3 +414,6 @@ volumes:
   minio_data:
   ivy_cache:
   gold_data:
+  airflow_logs:
+  prometheus_data:
+  grafana_data:

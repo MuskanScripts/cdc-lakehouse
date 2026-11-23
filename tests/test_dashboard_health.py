@@ -36,6 +36,27 @@ def test_gold_alerts_healthy_failed_stale_and_missing():
     assert len(health.gold_alerts(None, None)) == 2                     # loop never ran, no gold
 
 
+def test_gold_alerts_blocked_by_data_quality_names_the_check():
+    blocked = {"status": "BLOCKED", "finished_at": "t",
+               "summary": "DQ FAIL | blocking: orders_total_non_negative=5 | 16 checks"}
+    alerts = health.gold_alerts(blocked, 40)
+    assert len(alerts) == 1
+    assert "BLOCKED by data quality" in alerts[0] and "orders_total_non_negative=5" in alerts[0]
+    assert "last GOOD build" in alerts[0]
+
+
+def test_dq_warnings_only_for_warned_checks():
+    assert health.dq_warnings(None) == []
+    assert health.dq_warnings({"status": "OK", "dq": None}) == []
+    ok = {"status": "OK", "dq": {"status": "PASS", "warned": [], "checks": []}}
+    assert health.dq_warnings(ok) == []
+    warn = {"status": "OK", "dq": {"status": "WARN", "warned": ["orders_volume_vs_trailing_hours"],
+                                   "checks": [{"name": "orders_volume_vs_trailing_hours", "value": 4.25}]}}
+    w = health.dq_warnings(warn)
+    assert len(w) == 1 and "orders_volume_vs_trailing_hours = 4.2" in w[0] and "still published" in w[0]
+    assert health.gold_alerts(warn, 20) == []           # a warning is never a red banner
+
+
 def test_lag_counts_unread_messages_and_new_partitions():
     committed = health.parse_offsets(OFFSETS)
     end = {("ecom.public.orders", 0): 101, ("ecom.public.orders", 1): 100,
