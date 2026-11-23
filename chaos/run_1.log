@@ -1,0 +1,152 @@
+== before: reconcile must already be clean
+ Container postgres Running 
+ Image cdc-lakehouse/chaos:local Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 546B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile
+#2 transferring dockerfile: 190B done
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/python:3.12-slim
+#3 DONE 1.0s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 5.46kB done
+#5 DONE 0.0s
+
+#6 [1/4] FROM docker.io/library/python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+#6 resolve docker.io/library/python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b 0.1s done
+#6 DONE 0.1s
+
+#7 [2/4] RUN pip install --no-cache-dir "psycopg[binary]==3.2.3" deltalake==0.22.3 pyarrow
+#7 CACHED
+
+#8 [3/4] WORKDIR /app
+#8 CACHED
+
+#9 [4/4] COPY . /app
+#9 DONE 0.1s
+
+#10 exporting to image
+#10 exporting layers
+#10 exporting layers 0.2s done
+#10 exporting manifest sha256:61fef045d6c9762a8c0d3c463e655eef5d2236ee8c9530f5c44743b6b705b96f 0.0s done
+#10 exporting config sha256:8fee23926fff4d3a66d1a79a40ab89cdd28f1e89e891c835f29e51446b0c9018 0.0s done
+#10 exporting attestation manifest sha256:c8586a0afb2c3f0792ff26efbaecd21ecce8fd71f7e4827eb5efa40f24cd3ccb
+#10 exporting attestation manifest sha256:c8586a0afb2c3f0792ff26efbaecd21ecce8fd71f7e4827eb5efa40f24cd3ccb 0.1s done
+#10 exporting manifest list sha256:d40ead38bac8f9dd001b5fa37343facae4ff8ccf1e1ed5b2b18545dd944d7d26 0.0s done
+#10 naming to docker.io/cdc-lakehouse/chaos:local
+#10 naming to docker.io/cdc-lakehouse/chaos:local done
+#10 unpacking to docker.io/cdc-lakehouse/chaos:local 0.1s done
+#10 DONE 0.7s
+
+#11 resolving provenance for metadata file
+#11 DONE 0.0s
+ Image cdc-lakehouse/chaos:local Built 
+ Container postgres Waiting 
+ Container postgres Healthy 
+ Container cdc-lakehouse-reconcile-run-53781fcc1138 Creating 
+ Container cdc-lakehouse-reconcile-run-53781fcc1138 Created 
+table         postgres    silver  missing  extra  mismatch  dupes          sum pg    sum silver  result
+-------------------------------------------------------------------------------------------------------
+users             2186      2186        0      0         0      0                                OK
+products           910       910        0      0         0      0                                OK
+orders           24848     24848        0      0         0      0   2254946970.88 2254946970.88  OK
+order_items      43541     43541        0      0         0      0                                OK
+payments         24846     24846        0      0         0      0   2254946968.88 2254946968.88  OK
+RECONCILE PASS: 0 difference on all tables
+== before: bronze duplicate offsets (baseline)
+ Container postgres Running 
+ Container postgres Waiting 
+ Container postgres Healthy 
+ Container cdc-lakehouse-reconcile-run-85ab3a5317ca Creating 
+ Container cdc-lakehouse-reconcile-run-85ab3a5317ca Created 
+table             rows   duplicate offsets
+users             6269                   0
+products          3477                   0
+orders           70777                   0
+order_items      48657                   0
+payments         53119                   0
+BRONZE OK: every Kafka offset exactly once
+== simulator at 100 changes/s
+simulator container: cdc-lakehouse-simulator-run-26729a4dcfb3 (Up 12 seconds)
+07:17:16 chaos start: 10 kills among [streaming connect kafka], gap 20-60s, downtime 3-12s
+07:18:00 kill 1/10: docker kill connect (down 6s)
+07:18:09   connect is back
+07:18:30 kill 2/10: docker kill streaming (down 10s)
+07:18:43   streaming is back
+07:19:29 kill 3/10: docker kill connect (down 9s)
+07:19:38   connect is back
+07:20:12 kill 4/10: docker kill connect (down 11s)
+07:20:28   connect is back
+07:20:48 kill 5/10: docker kill streaming (down 11s)
+07:21:04   streaming is back
+07:21:30 kill 6/10: docker kill kafka (down 8s)
+07:21:40   kafka is back
+07:22:22 kill 7/10: docker kill connect (down 6s)
+07:22:32   connect is back
+07:22:54 kill 8/10: docker kill connect (down 5s)
+07:23:03   connect is back
+07:23:39 kill 9/10: docker kill streaming (down 8s)
+07:23:50   streaming is back
+07:24:11 kill 10/10: docker kill streaming (down 8s)
+07:24:24   streaming is back
+07:24:43 chaos done: 10 kills, watchdog restarted a failed connector task 0 time(s)
+== stopping simulator (graceful SIGTERM)
+== waiting for silver to catch up, then reconcile
+ Container postgres Running 
+ Container postgres Waiting 
+ Container postgres Healthy 
+ Container cdc-lakehouse-reconcile-run-e865472d6747 Creating 
+ Container cdc-lakehouse-reconcile-run-e865472d6747 Created 
+... silver not caught up yet (5 tables differ), retrying
+... silver not caught up yet (5 tables differ), retrying
+... silver not caught up yet (5 tables differ), retrying
+... silver not caught up yet (5 tables differ), retrying
+... silver not caught up yet (5 tables differ), retrying
+... silver not caught up yet (5 tables differ), retrying
+... silver not caught up yet (3 tables differ), retrying
+table         postgres    silver  missing  extra  mismatch  dupes          sum pg    sum silver  result
+-------------------------------------------------------------------------------------------------------
+users             2523      2523        0      0         0      0                                OK
+products          1089      1089        0      0         0      0                                OK
+orders           31737     31737        0      0         0      0   2870198042.61 2870198042.61  OK
+order_items      55508     55508        0      0         0      0                                OK
+payments         31735     31735        0      0         0      0   2870198040.61 2870198040.61  OK
+RECONCILE PASS: 0 difference on all tables
+== bronze duplicate offsets (after)
+ Container postgres Running 
+ Container postgres Waiting 
+ Container postgres Healthy 
+ Container cdc-lakehouse-reconcile-run-d0fe0c503897 Creating 
+ Container cdc-lakehouse-reconcile-run-d0fe0c503897 Created 
+table             rows   duplicate offsets
+users             7761                   0
+products          4490                   0
+orders           92471                   0
+order_items      63407                   0
+payments         69475                   0
+BRONZE OK: every Kafka offset exactly once
+== order-event delay
+ Container postgres Running 
+ Container postgres Waiting 
+ Container postgres Healthy 
+ Container cdc-lakehouse-reconcile-run-b978d44e4100 Creating 
+ Container cdc-lakehouse-reconcile-run-b978d44e4100 Created 
+order-created events: 9921   (on time 9920, routed to late_events 1)
+delay = bronze ingest_ts - created_at, seconds:
+  p50       132.8
+  p90       387.1
+  p95       419.3
+  p99       443.9
+  p99.9     450.3
+  max      1806.2
+events later than the 600s watermark: 1 (0.010%)
+== streaming restarts / errors in the log
+error-ish log lines: 448

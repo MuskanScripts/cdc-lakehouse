@@ -23,14 +23,19 @@ def key(row, pk):
 
 def check_table(table: str) -> dict:
     pk, cols = TABLES[table]
-    pg = {key(r, pk): r for r in pg_rows(table)}
+    pg_list = pg_rows(table)
+    pg = {key(r, pk): r for r in pg_list}
+    # schema drift: compare every column Postgres has now, not a fixed list. A column that
+    # silver never received is then a mismatch (silver.get() is None) instead of being ignored.
+    if pg_list:
+        cols = [c for c in pg_list[0] if c not in pk]
     all_silver = silver_rows(table)
     cur = [r for r in all_silver if not r["_is_deleted"]]
     sv = {key(r, pk): r for r in cur}
 
     missing = [k for k in pg if k not in sv]       # in Postgres, not in silver
     extra = [k for k in sv if k not in pg]         # in silver, gone from Postgres
-    mismatched = [k for k in pg if k in sv and any(pg[k][c] != sv[k][c] for c in cols)]
+    mismatched = [k for k in pg if k in sv and any(pg[k][c] != sv[k].get(c) for c in cols)]
 
     res = {
         "table": table,

@@ -1,4 +1,4 @@
-.PHONY: help up down clean ps logs register status topics consume simulate simulate-fast check spark-smoke psql slot-lag test stream-up stream-logs stream-down reconcile latency
+.PHONY: help up down clean ps logs register status topics consume simulate simulate-fast check spark-smoke psql slot-lag test stream-up stream-logs stream-down reconcile latency drift late-demo late-stats bronze-check chaos
 
 TABLE ?= orders
 RATE  ?= 200
@@ -74,6 +74,21 @@ reconcile:       ## compare Postgres vs silver; non-zero exit on any difference 
 
 latency:         ## end-to-end latency p50/p95/p99 (MINUTES=5 window)
 	docker compose run --rm reconcile latency.py --minutes $(or $(MINUTES),5)
+
+drift:           ## schema drift drill: ADD COLUMN while running, time it to silver (COL=coupon_code TBL=orders)
+	docker compose run --rm --build reconcile drift.py --column $(or $(COL),coupon_code) --table $(or $(TBL),orders)
+
+late-demo:       ## send a 30-minute-late order and prove it lands in late_events, not in orders_per_minute
+	docker compose run --rm reconcile late_demo.py
+
+late-stats:      ## order event delay percentiles (basis for the watermark); MINUTES=60 limits the window
+	docker compose run --rm reconcile event_delay.py --minutes $(or $(MINUTES),0)
+
+bronze-check:    ## every Kafka offset exactly once in bronze?
+	docker compose run --rm reconcile bronze_check.py
+
+chaos:           ## simulator + 10 random kills of streaming/connect/kafka, then reconcile (RATE=100 KILLS=10)
+	RATE=$(or $(RATE),100) KILLS=$(or $(KILLS),10) ./chaos/run_chaos.sh
 
 slot-lag:        ## WAL retained by the Debezium slot (alert on this in prod)
 	docker compose exec postgres psql -U ecom -d ecom -c \

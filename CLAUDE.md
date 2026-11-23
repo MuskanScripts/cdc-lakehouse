@@ -28,7 +28,16 @@ events.
   and `list[str]` hints in anything that runs there.
 - Corporate laptop: if a download is blocked, stop and tell Rohit. Don't silently switch tools.
 
-## Current state (Weeks 1 and 2 DONE)
+## Current state (Weeks 1, 2 and 3 DONE)
+**Week 3 (done):** schema drift via autoMerge + per-schema-id decode, type changes quarantined as
+`schema_incompatible` (ADR-018); idempotent `txnAppId`/`txnVersion` appends, bump `TXN_EPOCH` if
+a checkpoint is deleted (ADR-019); orders-per-minute with a 10 min watermark, third query in the
+same driver, `late_events` table (ADR-020); `make chaos` = 10 SIGKILLs, run twice, reconcile 0 /
+0 / 0 / 0 both times (ADR-021, `chaos/run_*.log`). `make test` = 21 tests. Open issue: silver
+batches take 19-26 s at 50/s, slower than Week 2 (cause not found, see ADR-021); the driver sits
+at ~2.6 of 2.73 GiB. Do not use `bash -l` through `wsl -e` on this laptop: the profile runs
+`sudo` and hangs, use `bash -c`.
+
 **Week 1: capture.** `make up` starts postgres, kafka (KRaft), schema-registry, connect
 (+Debezium 2.7, Avro), minio (+bucket `lakehouse`), spark (client container,
 apache/spark:3.5.3-python3), kafka-ui. Connector `ecom-postgres` publishes

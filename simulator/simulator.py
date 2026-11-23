@@ -36,6 +36,7 @@ CITIES = ["Delhi", "Mumbai", "Bengaluru", "Hyderabad", "Chennai", "Pune",
 TIERS = ["bronze", "silver", "gold", "platinum"]
 CATEGORIES = ["electronics", "fashion", "home", "grocery", "beauty", "books", "sports", "toys"]
 PAY_METHODS = ["upi", "card", "netbanking", "wallet", "cod"]
+COUPONS = ["WELCOME10", "FESTIVE20", "FREESHIP", "NEWYEAR5", "LOYAL15"]
 
 # action -> relative weight. Tuned so every table sees c, u and d events.
 ACTION_WEIGHTS = {
@@ -105,6 +106,18 @@ class Simulator:
         self.new_users = Pool()      # candidates for "delete inactive user"
         self.new_products = Pool()   # candidates for "discontinue unsold product"
         self.row_changes = Counter()  # (table, op) -> count
+        self.has_coupon = False       # becomes True once `make drift` adds orders.coupon_code
+
+    def refresh_schema(self) -> None:
+        """Week 3 schema drift: notice `orders.coupon_code` appearing while we run."""
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name='orders' AND column_name='coupon_code'")
+            found = cur.fetchone() is not None
+        self.conn.commit()  # never hold a transaction open: ALTER TABLE needs an exclusive lock
+        if found and not self.has_coupon:
+            print("[schema] orders.coupon_code exists now: filling it on ~30% of new orders", flush=True)
+        self.has_coupon = found
 
     # ---------- setup ----------
 
@@ -170,10 +183,17 @@ class Simulator:
         items = [(pid, random.randint(1, 3), self.products[pid]) for pid in chosen]
         total = sum(qty * price for _, qty, price in items)
 
-        cur.execute(
-            "INSERT INTO orders (user_id, status, total) VALUES (%s, 'created', %s) RETURNING order_id",
-            (uid, total),
-        )
+        if self.has_coupon and random.random() < 0.3:
+            cur.execute(
+                "INSERT INTO orders (user_id, status, total, coupon_code) VALUES (%s, 'created', %s, %s) "
+                "RETURNING order_id",
+                (uid, total, random.choice(COUPONS)),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO orders (user_id, status, total) VALUES (%s, 'created', %s) RETURNING order_id",
+                (uid, total),
+            )
         oid = cur.fetchone()[0]
         cur.executemany(
             "INSERT INTO order_items (order_id, product_id, qty, price) VALUES (%s, %s, %s, %s)",
@@ -353,6 +373,7 @@ class Simulator:
         signal.signal(signal.SIGTERM, _stop)
 
         start = last_stats = time.monotonic()
+        last_schema_check = float("-inf")
         events = events_at_last_stats = 0
         print(f"running at ~{rate:g} row changes/sec"
               + (f" for {duration:g}s" if duration else " until Ctrl+C"), flush=True)
@@ -361,6 +382,10 @@ class Simulator:
             now = time.monotonic()
             if duration and now - start >= duration:
                 break
+
+            if now - last_schema_check >= 2.0:
+                last_schema_check = now
+                self.refresh_schema()
 
             action = random.choices(actions, weights)[0]
             try:

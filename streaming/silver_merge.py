@@ -11,6 +11,7 @@ from functools import reduce
 
 from pyspark.sql import functions as F
 
+from streaming.common.late_events import WatermarkTracker, process_order_events
 from streaming.common.schema_registry import SchemaRegistry
 from streaming.common.spark_session import SCHEMA_REGISTRY_URL, get_spark
 from streaming.common.tables import BRONZE, CHECKPOINTS, QUARANTINE, SILVER, TABLES
@@ -28,9 +29,12 @@ def start_silver(spark):
         for t in TABLES
     ]
     stream = reduce(lambda a, b: a.unionByName(b), sources)
+    tracker = WatermarkTracker()
     return (
         stream.writeStream
-        .foreachBatch(lambda df, bid: process_batch(df, bid, registry.writer_schema, SILVER, QUARANTINE))
+        .foreachBatch(lambda df, bid: process_batch(
+            df, bid, registry.writer_schema, SILVER, QUARANTINE,
+            order_events=lambda good, batch_id: process_order_events(good, batch_id, tracker)))
         .option("checkpointLocation", f"{CHECKPOINTS}/silver")
         .trigger(processingTime=TRIGGER)
         .queryName("silver")

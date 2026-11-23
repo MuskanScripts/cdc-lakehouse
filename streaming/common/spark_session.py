@@ -34,6 +34,8 @@ def get_spark(app_name: str, *, master: str | None = None, s3: bool = True,
         .config("spark.ui.enabled", "false")
         # Delta replays its log with 50 tasks by default; for tables this small that's pure overhead
         .config("spark.databricks.delta.snapshotPartitions", "2")
+        # schema drift: a new source column is added to silver by the MERGE itself (ADR-018)
+        .config("spark.databricks.delta.schema.autoMerge.enabled", "true")
     )
     if master:
         b = b.master(master)

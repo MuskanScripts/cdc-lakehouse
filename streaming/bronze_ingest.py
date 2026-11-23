@@ -14,7 +14,7 @@ from pyspark.sql.types import (BinaryType, IntegerType, LongType, StringType,
                                StructField, StructType, TimestampType)
 
 from streaming.common.spark_session import KAFKA_BOOTSTRAP, get_spark
-from streaming.common.tables import BRONZE, CHECKPOINTS, TABLES
+from streaming.common.tables import BRONZE, CHECKPOINTS, TABLES, idempotent
 from streaming.common.transforms import schema_id_col
 
 BRONZE_SCHEMA = StructType([
@@ -39,10 +39,12 @@ def ensure_bronze_tables(spark) -> None:
         spark.createDataFrame([], BRONZE_SCHEMA).write.format("delta").mode("ignore").save(f"{BRONZE}/{table}")
 
 
-def _write_topic(batch_df, topic: str) -> str:
+def _write_topic(batch_df, topic: str, batch_id: int) -> str:
     table = topic.rsplit(".", 1)[-1]
-    (batch_df.filter(F.col("topic") == topic).coalesce(1)
-     .write.format("delta").mode("append").save(f"{BRONZE}/{table}"))
+    # (txnAppId, txnVersion=batch id): a replayed batch is skipped by Delta, so bronze is
+    # exactly-once per Kafka offset even when the driver dies between two topic commits.
+    writer = batch_df.filter(F.col("topic") == topic).coalesce(1).write.format("delta").mode("append")
+    idempotent(writer, "bronze", batch_id).save(f"{BRONZE}/{table}")
     return table
 
 
@@ -52,7 +54,7 @@ def _write_batch(batch_df, batch_id: int) -> None:
     try:
         topics = [r[0] for r in batch_df.select("topic").distinct().collect()]
         with ThreadPoolExecutor(max_workers=len(topics) or 1) as pool:  # independent tables, write in parallel
-            list(pool.map(lambda t: _write_topic(batch_df, t), topics))
+            list(pool.map(lambda t: _write_topic(batch_df, t, batch_id), topics))
         log.warning("bronze batch=%s took %.1fs, %s topics", batch_id, time.time() - t0, len(topics))
     finally:
         batch_df.unpersist()
