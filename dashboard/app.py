@@ -14,6 +14,7 @@ import streamlit as st
 import health
 
 GOLD = os.environ.get("GOLD_SERVE_PATH", "/data/gold.duckdb")
+STATUS = os.environ.get("GOLD_STATUS_PATH", "/data/last_build.json")
 WINDOW_MIN = int(os.environ.get("DASH_WINDOW_MINUTES", "60"))
 REFRESH_S = int(os.environ.get("DASH_REFRESH_SECONDS", "10"))
 
@@ -33,8 +34,10 @@ def query(sql: str) -> pd.DataFrame:
 
 @st.fragment(run_every=REFRESH_S)
 def live():
+    status = health.read_status(STATUS)
     if not os.path.exists(GOLD):
-        st.warning("No gold build published yet: is `make gold-up` running?")
+        for a in health.gold_alerts(status, None):
+            st.error(a)
         return
     since = f"now()::timestamp - interval {WINDOW_MIN} minute"
     per_min = query(f"""
@@ -57,6 +60,8 @@ def live():
     placed = per_min["orders"].sum()
     refund_rate = refunds["refunds"].sum() / placed if placed else 0.0
     age = (pd.Timestamp.utcnow().tz_localize(None) - pd.Timestamp(info["built_at"])).total_seconds()
+    for a in health.gold_alerts(status, age):     # red banner above everything (ADR-027)
+        st.error(a, icon="🚨")
 
     k = st.columns(5)
     k[0].metric(f"Net revenue, {WINDOW_MIN} min", f"₹{per_min['net_revenue'].sum():,.0f}")

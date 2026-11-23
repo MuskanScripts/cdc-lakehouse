@@ -230,6 +230,7 @@ services:
     container_name: dbt
     profiles: ["gold"]
     restart: unless-stopped
+    init: true                # ADR-027: with bash as PID 1 every dbt build lost its ref() dependencies
     mem_limit: 1g
     working_dir: /dbt
     command: ["bash", "/dbt/run_loop.sh"]

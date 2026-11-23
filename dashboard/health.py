@@ -37,6 +37,36 @@ def latest_batch(keys) -> int | None:
     return max(ids) if ids else None
 
 
+MAX_GOLD_AGE_S = 120
+
+
+def gold_alerts(status: dict | None, gold_age_s: float | None, max_age_s: float = MAX_GOLD_AGE_S) -> list:
+    """Red-banner messages for the dashboard (ADR-027). Empty list = healthy.
+
+    status      the dbt loop's /data/last_build.json (None if it was never written)
+    gold_age_s  seconds since the PUBLISHED gold was built (None if there is no gold)
+    """
+    alerts = []
+    if status is None:
+        alerts.append("No build status from the dbt loop (/data/last_build.json missing): is `make gold-up` running?")
+    elif status.get("status") != "OK":
+        alerts.append(f"Last dbt build FAILED at {status.get('finished_at', '?')}: {status.get('summary', '')}. "
+                      "This page shows the last GOOD build, not current data. See `make gold-logs`.")
+    if gold_age_s is None:
+        alerts.append("No published gold yet.")
+    elif gold_age_s > max_age_s:
+        alerts.append(f"Gold is {gold_age_s:.0f}s old (limit {max_age_s:.0f}s): numbers below are stale.")
+    return alerts
+
+
+def read_status(path: str):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
 def kafka_lag(committed: dict, end_offsets: dict) -> int:
     """Messages in Kafka that bronze has not committed yet, over all partitions."""
     return sum(max(0, end - committed.get(tp, 0)) for tp, end in end_offsets.items())

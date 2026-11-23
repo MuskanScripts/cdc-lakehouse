@@ -206,6 +206,7 @@ Caveats I want to be upfront about:
 | Refund rate | 11.8-11.9% (simulator design: 4 refunds per 32 orders = 12.5%) | same |
 | SCD2 | 256 users with history (max 3 versions); orders shown in their city at order time, e.g. order 46741 Patiala then, Ahmedabad now | query on `dim_user` / `fact_orders` |
 | Reconcile after all of it | 0 / 0 / 0 / 0 on all 5 tables (48,641 orders) | `make reconcile` |
+| Gold freshness after the ADR-027 fix | 9 consecutive builds OK during a 300 s run at 50/s; "Gold built" 6-30 s over 11 renders; red banner verified for a failed build and for gold > 2 min old | `make simulate RATE=50 DURATION=300` + `snapshot.py` |
 | Memory, whole stack incl. gold, simulator on | streaming 3.51 of 3.9 GiB, connect 1.49 GiB, minio 0.60, kafka 0.63, schema-registry 0.35, dbt 0.11-0.27 of 1 GiB, dashboard 0.04-0.06 of 0.5 GiB; WSL 7.1 GiB used, 2.6 available | `docker stats` |
 
 **Silver performance, investigated (ADR-023).** The Week 3 guess (small files) was wrong:
@@ -242,8 +243,10 @@ are in ADR-023; none is applied yet.
 - **Deleted a streaming checkpoint?** Also set `TXN_EPOCH` to a new value (env of the `streaming`
   service) or wipe the Delta tables. Batch ids restart at 0 and the idempotent writes would
   skip them as "already done" (ADR-019).
-- **Dashboard says "No gold build published yet"** or "Gold built" keeps growing: `make gold-logs`.
-  A FAILED build lists the failing dbt test; the dashboard keeps showing the last good build.
+- **Red banner on the dashboard**: "Last dbt build FAILED" or "Gold is Ns old". Run `make gold-logs`.
+  A FAILED build lists the failing dbt test; the page keeps showing the last good build until a
+  build passes. If every build fails with "unable to infer all dependencies", check that the dbt
+  service still has `init: true` (ADR-027).
 - **`make dbt-test` / `make dbt-build` while the loop runs**: they pause the loop themselves,
   because DuckDB allows only one writer.
 - **`make drift` says the column already exists**: the drill only means something the first time;

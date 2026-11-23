@@ -15,6 +15,10 @@ if at.exception:
     for e in at.exception:
         print("EXCEPTION:", e.message)
     sys.exit(1)
+for e in at.error:
+    print("RED BANNER:", e.value)
+if not at.error:
+    print("(no red banner: last build OK and gold fresh)")
 for w in at.warning:
     print("WARNING:", w.value)
 for m in at.metric:

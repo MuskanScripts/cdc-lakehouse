@@ -432,3 +432,47 @@ newest minutes keep rising as orders get paid.
 so DuckDB grouped by the HH:MM text and mixed Nov 20 11:xx with today, which looked like a 3 hour
 timezone bug. The gold timestamps were correct UTC; only the check was wrong. I fixed the
 check, not the data.
+
+## ADR-027: The dbt loop must not run as PID 1, and a failed build must be visible
+**Problem.** After `make gold-up`, every build in the loop failed with "Compilation Error ... dbt
+was unable to infer all dependencies" for every node that uses `ref()` (all marts, the snapshot,
+the 3 singular tests). The 4 staging models passed because they only use `source()`. The
+dashboard kept serving the last good build, which was correct behaviour, but it said nothing, so
+it looked healthy while being 7+ minutes stale.
+**How I found it** (each step a run, not a guess):
+- In the failing manifest every node had its `refs` but an EMPTY `depends_on`, so the marts ran
+  before staging.
+- Partial parsing: ruled out. A fresh container did build 1 (full parse) and build 2 (partial
+  parse); both passed with correct `depends_on`. In the loop container even the FIRST build of a
+  freshly created container failed.
+- `dbt deps` before the build, the real `/data` build file, stdin, output redirection: all ruled
+  out. Each passed in a `docker compose run` container, and `run_loop.sh` itself passed there.
+- Inside the failing container, `docker exec dbt dbt parse` linked correctly (about 8 s). The
+  loop's own failing parse took 0.34 s for the same project.
+- The one difference left: in the `up` container, `bash run_loop.sh` is PID 1. A/B: with bash as
+  PID 1, FAILED x4 out of 4 (and every build since 09:36). With `init: true` (docker-init as PID 1,
+  bash as its child), and nothing else changed: OK x3, and then the proof run below.
+**What I don't know.** I have not traced the exact code path inside dbt. My guess is that
+something in dbt's parse (it starts a multiprocessing resource tracker) misbehaves when its parent
+is a PID 1 that does not act as an init. The A/B is solid; the mechanism is not proven.
+**Fix.** `init: true` on the `dbt` service. `run_loop.sh` also prints a warning if it ever finds
+itself as PID 1. Build time cost: none (10-13 s per build, same as healthy builds before).
+`--no-partial-parse` would not have fixed it: the failing builds were already full parses.
+**Guard.** After every build, OK or FAILED, the loop writes `/data/last_build.json` (status, time,
+dbt summary, first error) atomically. The dashboard shows a red banner when the last build
+FAILED or the published gold is older than 2 minutes (`health.gold_alerts`, unit-tested).
+"Serve the last good data" stays the rule, but now it can never happen quietly.
+**Second fix found by the proof run.** With the PID 1 fix alone, 6 of 6 builds were OK during a
+300 s simulator run at 50/s, but one dashboard render said "Gold built 71s ago". Builds take 24-39
+s under load, and the loop then paused a fixed 30 s, so a cycle was up to ~70 s. The loop now
+starts a build every 30 s (it sleeps `30 - build time`, at least 2 s).
+**Proof** (`make simulate RATE=50 DURATION=300`, `dashboard/snapshot.py` every ~17-23 s):
+- 9 builds OK, 0 FAILED in a row; builds 17-25 s.
+- "Gold built" over 11 renders: 6-30 s, max 30 s.
+- Guard, failed build (a temporary failing test): red banner "Last dbt build FAILED ... Failure
+  in test zz_guard_probe". It cleared on the next OK build.
+- Guard, stale gold (loop stopped 140 s): red banner "Gold is 182s old (limit 120s)". It cleared
+  after restart.
+- Reconcile afterwards: 0 difference on all 5 tables.
+**Lesson.** "Works when I run it by hand" and "works in the service" can differ in process
+setup, not just config. Compare what PID 1 is, not only env and mounts.

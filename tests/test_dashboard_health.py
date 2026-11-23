@@ -25,6 +25,17 @@ def test_latest_batch_ignores_non_numeric_keys():
     assert health.latest_batch([]) is None
 
 
+def test_gold_alerts_healthy_failed_stale_and_missing():
+    ok = {"status": "OK", "finished_at": "t", "summary": "Done. PASS=29"}
+    assert health.gold_alerts(ok, 25) == []
+    failed = health.gold_alerts({"status": "FAILED", "finished_at": "t", "summary": "ERROR=9"}, 25)
+    assert len(failed) == 1 and "FAILED" in failed[0] and "ERROR=9" in failed[0]
+    stale = health.gold_alerts(ok, 121)
+    assert len(stale) == 1 and "121s old" in stale[0]
+    assert len(health.gold_alerts({"status": "FAILED"}, 600)) == 2      # both problems shown
+    assert len(health.gold_alerts(None, None)) == 2                     # loop never ran, no gold
+
+
 def test_lag_counts_unread_messages_and_new_partitions():
     committed = health.parse_offsets(OFFSETS)
     end = {("ecom.public.orders", 0): 101, ("ecom.public.orders", 1): 100,

@@ -9,3 +9,5 @@ derby.log
 
 # dbt per-install anonymous id
 dbt/.user.yml
+# created empty by `dbt deps` (no packages)
+dbt/dbt_packages/
