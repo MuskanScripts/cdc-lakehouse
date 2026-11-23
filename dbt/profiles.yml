@@ -1,0 +1,12 @@
+lakehouse:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      # the BUILD file; run_loop.sh publishes a copy as /data/gold.duckdb after a green build
+      path: "{{ env_var('GOLD_BUILD_PATH', '/data/gold_build.duckdb') }}"
+      threads: 1
+      settings:
+        TimeZone: UTC
+      plugins:
+        - module: delta     # reads silver Delta tables on MinIO through delta-rs (no JVM, no extension download)

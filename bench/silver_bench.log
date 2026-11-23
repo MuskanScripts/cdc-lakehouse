@@ -1,0 +1,2 @@
+before-optimize: rate=50/s batches=3 batch_s median=46.7 p90=47.5 max=47.5 | rows/batch median=2391 | median merge_s users=23.8 products=24.4 orders=25.4 order_items=25.2 payments=24.0
+after-optimize: rate=50/s batches=5 batch_s median=30.5 p90=44.7 max=44.7 | rows/batch median=1637 | median merge_s users=18.0 products=19.1 orders=18.5 order_items=18.5 payments=19.1

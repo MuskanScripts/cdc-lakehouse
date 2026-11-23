@@ -298,3 +298,137 @@ files all over the table. That needs profiling before I claim a throughput numbe
 failed on it. I fixed it by carrying `ingest_ts` through (`PASSTHROUGH_COLS`).
 **Rejected.** Killing from inside the containers (needs tooling in the images), and a fixed kill
 schedule (a random one is less likely to line up with the 10 s trigger by accident).
+**Update (ADR-023):** the guess above was wrong. The tables do NOT have many small files; every
+MERGE rewrites the whole table.
+
+## ADR-022: Streaming driver: 4 GB container, 2200m heap
+**Decision.** WSL now has 9.7 GB. The streaming container limit goes from 2.8 GB to 4 GB and
+`--driver-memory` from 1500m to 2200m (`STREAM_DRIVER_MEMORY` overrides it).
+**Why these numbers.** Measured before the change: all containers together used about 5.0 GB,
+with 4.7 GB available. The driver used 2.6 GiB with a 1500m heap, so about 1.1 GB is off-heap
+(metaspace, JIT code, Netty and S3A buffers, Python). 2200m heap + ~1.1 GB = about 3.3 GB,
+which leaves 0.7 GB under the 4 GB limit. Week 4 adds the dbt loop (1 GB limit) and the dashboard
+(512 MB limit), and `make optimize` briefly runs a second Spark JVM while streaming is stopped.
+Measured after, under load at 50/s: streaming 2.82 GiB in the first minutes, then **3.48-3.51
+GiB of 3.9 GiB** once warm, with the whole stack including dbt and the dashboard at 7.1 GiB used
+and 2.6 GiB available. That is more than my 3.3 GB estimate: the JVM grows into the larger heap.
+No OOM kill so far, but the margin is about 0.4 GB, so I would not raise the heap further without
+raising the limit too.
+**Rejected.** 5-6 GB for the driver: the heap was never the bottleneck (see ADR-023, the time goes
+to rewriting files), and it would leave too little for Week 4 and for the page cache MinIO needs.
+**Trade-off.** More heap means longer GC pauses when they happen. GC threads were about 0.8 of a
+core under load (ADR-023), the same order as before.
+
+## ADR-023: OPTIMIZE does not fix silver's slowdown: every MERGE rewrites the whole table
+**Experiment** (`make bench-silver`, 50 changes/s for 3 min, then `make optimize`, then again):
+
+| | before OPTIMIZE | after OPTIMIZE |
+|---|---|---|
+| active files per silver table | 4-9 (avg 20-495 KiB) | 1 (avg 67-1,964 KiB) |
+| silver batch time, median | 46.7 s (3 batches) | 30.5 s (5 batches) |
+| Delta `executionTimeMs` per MERGE, median of 15 / 10 | **9.3 s** | **11.6 s** |
+| files removed/added by the next MERGE | 4/4 | 4/4 (back to 4 files at once) |
+
+The batch-time drop is not OPTIMIZE: the "before" run started 8 minutes after the driver was
+recreated (memory change, ADR-022) with a cold JIT. Delta's own timer for the MERGE command did
+not improve. VACUUM RETAIN 168 HOURS deleted nothing, because every replaced file is younger than
+7 days, so each table keeps about 290 old parquet objects behind 1-4 live ones.
+**Where the time goes** (`make merge-profile` reads Delta's commit metrics, `make thread-cpu`
+samples JVM threads from /proc):
+1. **Write amplification.** An orders MERGE with 315 source rows copied 43,432 unchanged rows,
+   which is the whole table, removed all 4 files and wrote 4 new ones. It is the same for every
+   table in every batch: about 1.7k changes per batch make Spark rewrite about 170k rows. That is
+   roughly 100x, and it grows with table size, which is why it got slower since Week 2.
+   The cause: MERGE writes through a shuffle with `spark.sql.shuffle.partitions=4`, so each
+   output file holds keys from the whole id range, and the next batch's updates (random keys:
+   refunds pick any delivered order, user moves pick any user) touch every file again.
+2. **Inside one MERGE** (orders, version 77): 10.4 s total = 5.4 s scan (join source to the
+   whole target to find touched files) + 3.7 s rewrite + about 1.3 s other.
+3. **Outside the MERGE command**: the streaming log shows 9-17 s wall clock for the same merges,
+   so about 3-7 s more goes to snapshot/log reads, the commit, and waiting for CPU (5 tables merge
+   in parallel on `local[4]`, plus bronze and the aggregate).
+4. **CPU** (per-thread sample over 40 s at 50/s): the driver used about 4.7 cores. Spark tasks
+   1.8, JIT compiler 0.6, GC 0.8. Kafka itself used 3% of a core.
+**Decision.** No change to the MERGE yet. I keep `make optimize` because the nightly OPTIMIZE +
+VACUUM job is Week 5 anyway, and the tool makes this experiment repeatable. OPTIMIZE must run with
+streaming stopped: the S3 log store only serialises commits inside one JVM.
+**Options for the fix, not done yet:** (a) deletion vectors (MERGE writes only changed rows;
+blocked until I check that delta-rs, used by reconcile and dbt, can read them); (b) cluster
+files by key and add a key-range predicate to the MERGE ON clause so only touched ranges are
+scanned and rewritten (helps orders/items/payments, whose updates are mostly recent keys); (c) a
+longer trigger (cost per MERGE is about fixed, so 30 s triples throughput, at a latency cost).
+
+## ADR-024: Gold with dbt-duckdb, published as a file swap, served by Streamlit
+**Decision.** dbt-duckdb, not dbt-spark. Silver is read with the dbt-duckdb `delta` plugin
+(delta-rs). A loop container runs `dbt build` (snapshot, models, all tests) every 30 s into
+`gold_build.duckdb`; only a fully green build is copied and renamed atomically to `gold.duckdb`.
+The dashboard is Streamlit and opens `gold.duckdb` read-only with a new connection per refresh
+(every 10 s).
+**Why not dbt-spark.** With `method: session`, dbt needs its own Spark JVM (about 1.5-2 GB) and a
+persistent metastore (Derby on a volume). Without that the catalog is in memory, dbt forgets the
+snapshot table on every restart and SCD2 history is lost. With streaming at 4 GB that does not
+fit comfortably in 9.7 GB, and ADR-023 shows the machine is already CPU bound. dbt-duckdb builds
+everything in 7.3 s with no JVM.
+**Why the file swap.** DuckDB allows one writer process and no other process can open the file
+while it writes. Reading the build file directly would block the dashboard during every build
+or fail it. The swap gives the dashboard a complete, consistent build at all times, and a failing
+test means the last good gold stays published. That is the Week 5 rule ("bad data never reaches
+gold") early.
+**Why Streamlit, not Metabase.** This is a deviation from the plan, so here is the reasoning.
+Metabase would fit in memory (roughly 1-1.5 GB), so memory is not the reason. The reasons are: its
+DuckDB driver is a third-party jar from GitHub (a download that can be blocked here); and it
+keeps a long-lived connection, which with a single-writer DuckDB file either blocks the dbt
+writer or keeps reading the old file after the swap. Streamlit runs in the same image as dbt (no
+new download source), opens a fresh read-only connection per refresh, and lets me compute Kafka
+lag from the bronze checkpoint in Python.
+**Rejected.** DuckDB's `delta` extension (downloaded from extensions.duckdb.org at runtime, can be
+blocked; the plugin uses the delta-rs package already proven here). Writing gold back as Delta on
+MinIO (delta-rs write support exists, but then snapshots need MERGE from DuckDB; not worth it
+for Week 4).
+**Trade-off.** Gold is a local DuckDB file, not a table on the lake: another engine cannot query it
+and it lives on one volume. Every build is a full rebuild and loads silver into memory; fine at
+40k orders, and the first thing to make incremental at 10x. Dashboard freshness = silver latency
++ up to 30 s build interval + 10 s refresh.
+
+## ADR-025: dim_user as a dbt snapshot, city at order time
+**Decision.** `users_snapshot` (`strategy='timestamp'`, `updated_at`,
+`invalidate_hard_deletes=True`) over current silver users. `dim_user` turns it into half-open
+versions `[valid_from, valid_to)`, `is_current = dbt_valid_to IS NULL`, and moves the FIRST version
+of each user to start at 1900-01-01. `agg_revenue_minute` joins orders to the version valid at
+`orders.created_at`.
+**Why the 1900 start.** The snapshot only began observing users when it first ran. Without it,
+every order placed before that moment would match no version and land in city 'unknown'. The
+earliest city we know is the best answer for those orders, and it is labelled as such here.
+**Tests that prove the join.** `assert_one_current_row_per_user` (existing users exactly one,
+deleted users none), `assert_scd_join_keeps_every_order_once` (sum of the aggregate = count of
+fact_orders, so no overlapping versions), `assert_older_orders_have_a_city` (no gaps for orders
+older than 5 min), `unique` on the version key, and `relationships` fact_orders → dim_user.
+**Trade-off.** A snapshot sees the state at each run, every 30 s. Two city changes inside one
+interval keep only the second. The exact history is in bronze (every Debezium event); building
+the SCD2 from bronze would be exact. That is the upgrade if city-level revenue has to be exact.
+The 5 minute grace in two tests exists because silver users and silver orders are separate Delta
+tables committed independently, so a new user's first order can be visible one batch earlier.
+**Measured.** After about 15 minutes of builds, 256 users had more than one version (max 3), and
+recent orders showed a city at order time different from the user's current city (e.g. order
+46741: Patiala at order time, Ahmedabad now).
+
+## ADR-026: Refund rate = refunds issued per minute / orders placed per minute
+**Problem.** My first refund-rate panel divided refunded orders by paid orders, both grouped by
+the minute the order was PLACED. It showed 0.0% for the last hour. The data was right: the
+simulator refunds a random delivered order from the whole history, so orders placed in the last
+hour have almost no refunds yet. My second try (refunds issued / paid orders placed) showed 55%,
+because new orders are paid at random later times, so that base lags far behind.
+**Decision.** Two flows over the same minutes: refunds by the minute they were issued
+(`refunded_at` = `updated_at` of a refunded order, because `refunded` is a terminal status in the
+app) divided by orders placed in that minute. Model `agg_refunds_minute`.
+**Check.** The simulator's action weights make refunds 4 per 32 new orders = 12.5%. The panel
+reads 11.8-11.9% over 60 minutes. That is about right, since refunds can only happen when there are
+delivered orders.
+**Trade-off.** It is an activity ratio, not "what share of this minute's orders end up
+refunded". That cohort number needs the orders to age (days in real life) and is a batch report,
+not a live panel. Revenue per minute stays on order time (and city at order time, ADR-025), so its
+newest minutes keep rising as orders get paid.
+**Also caught while checking:** my own verification query aliased `strftime(minute)` as `minute`,
+so DuckDB grouped by the HH:MM text and mixed Nov 20 11:xx with today, which looked like a 3 hour
+timezone bug. The gold timestamps were correct UTC; only the check was wrong. I fixed the
+check, not the data.

@@ -1,4 +1,4 @@
-.PHONY: help up down clean ps logs register status topics consume simulate simulate-fast check spark-smoke psql slot-lag test stream-up stream-logs stream-down reconcile latency drift late-demo late-stats bronze-check chaos
+.PHONY: help up down clean ps logs register status topics consume simulate simulate-fast check spark-smoke psql slot-lag test stream-up stream-logs stream-down reconcile latency drift late-demo late-stats bronze-check chaos bench-silver table-stats optimize merge-profile thread-cpu gold-up gold-down gold-logs dbt-build dbt-test
 
 TABLE ?= orders
 RATE  ?= 200
@@ -89,6 +89,45 @@ bronze-check:    ## every Kafka offset exactly once in bronze?
 
 chaos:           ## simulator + 10 random kills of streaming/connect/kafka, then reconcile (RATE=100 KILLS=10)
 	RATE=$(or $(RATE),100) KILLS=$(or $(KILLS),10) ./chaos/run_chaos.sh
+
+bench-silver:    ## silver batch timings under load (RATE=50 BENCH_SECONDS=180 LABEL=before), appends bench/silver_bench.log
+	RATE=$(or $(RATE),50) BENCH_SECONDS=$(or $(BENCH_SECONDS),180) LABEL=$(or $(LABEL),run) ./bench/silver_bench.sh
+
+table-stats:     ## active file count + avg file size per Delta table (LAYER=silver)
+	docker compose run --rm reconcile table_stats.py $(or $(LAYER),silver)
+
+optimize:        ## stop streaming, OPTIMIZE + VACUUM RETAIN 168 HOURS every silver table, start streaming (ADR-023)
+	docker compose --profile stream stop streaming
+	docker compose up -d spark
+	docker compose exec -T spark /opt/spark/bin/spark-submit --driver-memory 1500m \
+	  --packages io.delta:delta-spark_2.12:3.2.1,org.apache.hadoop:hadoop-aws:3.3.4 \
+	  --conf spark.jars.ivy=/root/.ivy2 /opt/project/spark/optimize.py $(or $(LAYER),silver) ; \
+	  rc=$$?; docker compose --profile stream up -d streaming; exit $$rc
+
+merge-profile:   ## Delta's own timings for the last N silver MERGEs (N=3): exec/scan/rewrite, rows copied
+	docker compose run --rm reconcile merge_profile.py $(or $(N),3)
+
+thread-cpu:      ## per-thread CPU of a java container over S seconds (C=streaming S=30)
+	./bench/thread_cpu.sh $(or $(C),streaming) $(or $(S),30)
+
+gold-up:         ## Week 4: dbt build loop (every 30 s) + dashboard on http://localhost:8501
+	docker compose --profile gold up -d --build dbt dashboard
+
+gold-down:       ## stop the dbt loop and the dashboard
+	docker compose --profile gold stop dbt dashboard
+
+gold-logs:       ## follow the dbt build loop (one line per build: OK/FAILED, timing)
+	docker compose logs -f --tail 20 dbt
+
+dbt-build:       ## one dbt build (snapshot + models + tests), full output; pauses the loop (DuckDB has one writer)
+	-docker compose --profile gold stop dbt
+	docker compose --profile gold run --rm --no-deps dbt dbt build --profiles-dir . ; \
+	  rc=$$?; docker compose --profile gold start dbt >/dev/null 2>&1; exit $$rc
+
+dbt-test:        ## dbt tests only, full output; pauses the loop
+	-docker compose --profile gold stop dbt
+	docker compose --profile gold run --rm --no-deps dbt dbt test --profiles-dir . ; \
+	  rc=$$?; docker compose --profile gold start dbt >/dev/null 2>&1; exit $$rc
 
 slot-lag:        ## WAL retained by the Debezium slot (alert on this in prod)
 	docker compose exec postgres psql -U ecom -d ecom -c \

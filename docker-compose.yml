@@ -158,6 +158,7 @@ services:
       - ./streaming:/opt/project/streaming
       - ./tests:/opt/project/tests
       - ./simulator:/opt/project/simulator
+      - ./dashboard:/opt/project/dashboard
       - ivy_cache:/root/.ivy2
     depends_on: [minio]
 
@@ -168,7 +169,7 @@ services:
     user: root
     profiles: ["stream"]
     restart: unless-stopped
-    mem_limit: 2800m
+    mem_limit: 4000m          # ADR-022: WSL has 9.7 GB; heap 2200m + ~1.1 GB off-heap measured
     working_dir: /opt/project
     depends_on:
       kafka:
@@ -192,7 +193,7 @@ services:
       - --master
       - local[4]
       - --driver-memory
-      - 1500m
+      - ${STREAM_DRIVER_MEMORY:-2200m}
       - --packages
       - org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,org.apache.spark:spark-avro_2.12:3.5.3,io.delta:delta-spark_2.12:3.2.1,org.apache.hadoop:hadoop-aws:3.3.4
       - --conf
@@ -220,6 +221,51 @@ services:
       SCHEMA_REGISTRY_URL: http://schema-registry:8081
     volumes:
       - ./chaos:/app
+
+  # Week 4 gold layer (profile `gold`: make gold-up). dbt-duckdb builds gold from silver Delta in a
+  # loop and publishes /data/gold.duckdb; the Streamlit dashboard reads that file (ADR-024).
+  dbt:
+    build: ./dbt
+    image: cdc-lakehouse/gold:local
+    container_name: dbt
+    profiles: ["gold"]
+    restart: unless-stopped
+    mem_limit: 1g
+    working_dir: /dbt
+    command: ["bash", "/dbt/run_loop.sh"]
+    environment: &gold_env
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio12345
+      AWS_ENDPOINT_URL: http://minio:9000
+      AWS_ALLOW_HTTP: "true"
+      AWS_REGION: us-east-1
+      S3_ENDPOINT: http://minio:9000
+      KAFKA_BOOTSTRAP: kafka:29092
+      DBT_INTERVAL: "30"
+      GOLD_BUILD_PATH: /data/gold_build.duckdb
+      GOLD_SERVE_PATH: /data/gold.duckdb
+    volumes:
+      - ./dbt:/dbt
+      - gold_data:/data
+    depends_on: [minio]
+
+  dashboard:
+    image: cdc-lakehouse/gold:local
+    pull_policy: never        # built by the dbt service (same image)
+    container_name: dashboard
+    profiles: ["gold"]
+    restart: unless-stopped
+    mem_limit: 512m
+    working_dir: /app
+    environment: *gold_env
+    command: ["streamlit", "run", "/app/app.py", "--server.port=8501", "--server.address=0.0.0.0",
+              "--server.headless=true", "--browser.gatherUsageStats=false"]
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./dashboard:/app
+      - gold_data:/data:ro
+    depends_on: [dbt]
 
   kafka-ui:
     image: kafbat/kafka-ui:latest
@@ -256,3 +302,4 @@ volumes:
   kafka_data:
   minio_data:
   ivy_cache:
+  gold_data:

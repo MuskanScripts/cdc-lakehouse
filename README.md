@@ -4,11 +4,13 @@
 > MERGE it into a Delta lakehouse, enforce quality gates, and serve live revenue and refund
 > numbers that match the source exactly, even after crashes, schema changes and late events.
 
-**Status:** Week 3 of 6. Capture (Postgres → Debezium → Kafka), bronze and silver
-(Kafka → Delta on MinIO, idempotent MERGE), schema drift handling, an event-time aggregate with a
-late-event table, and a chaos test. `make reconcile` shows 0 difference against Postgres on all
-5 tables after a 3-minute 200 changes/s run (Week 2) and after two runs with 10 random SIGKILLs
-each (Week 3). Known limit: this laptop cannot keep up with 100 changes/s (see Measured so far).
+**Status:** Week 4 of 6. Capture (Postgres → Debezium → Kafka), bronze and silver
+(Kafka → Delta on MinIO, idempotent MERGE), schema drift, an event-time aggregate with a
+late-event table, a chaos test, and a gold layer (dbt-duckdb: fact_orders, SCD2 dim_user,
+revenue per minute × city) behind a live dashboard on http://localhost:8501. `make reconcile`
+shows 0 difference against Postgres on all 5 tables after every run so far, including two runs
+with 10 random SIGKILLs each. Known limit: every silver MERGE rewrites the whole table, so
+throughput drops as tables grow (ADR-023; the fix is not done yet).
 
 ```
  Simulator ──► Postgres 16 ──WAL──► Debezium ──► Kafka (KRaft) ──► Spark Structured Streaming
@@ -31,7 +33,7 @@ make check                   # Week-1 acceptance: c/u/d events on every table's 
 make stream-up               # Week 2: start bronze + silver (one Spark driver, ~2.7 GB)
 make reconcile WAIT=300      # Postgres vs silver; retries while silver catches up; exit 1 on any diff
 make latency MINUTES=5       # end-to-end p50/p95/p99 over the last 5 minutes
-make test                    # 21 unit tests (run inside the spark container)
+make test                    # 24 unit tests (run inside the spark container)
 
 # Week 3
 make drift                   # ALTER TABLE orders ADD COLUMN coupon_code, time it until silver has it
@@ -39,10 +41,33 @@ make late-demo               # a 30-minute-old order must land in late_events, n
 make late-stats MINUTES=60   # event delay + disorder percentiles (the basis for the watermark)
 make chaos                   # simulator + 10 random SIGKILLs of streaming/connect/kafka, then reconcile
 make bronze-check            # every Kafka offset exactly once in bronze?
+
+# Week 4
+make gold-up                 # dbt build loop (every 30 s) + dashboard → http://localhost:8501
+make gold-logs               # one line per build: OK / FAILED (a failed build is not published)
+make dbt-build / dbt-test    # one build / tests only, full dbt output (pauses the loop)
+
+# performance tooling
+make bench-silver LABEL=x    # silver batch times at 50 changes/s for 3 min → bench/silver_bench.log
+make table-stats             # active files + avg file size per silver table
+make merge-profile           # Delta's own MERGE timings: exec / scan / rewrite, rows copied
+make thread-cpu C=streaming  # per-thread CPU of a JVM container
+make optimize                # stop streaming, OPTIMIZE + VACUUM 168h, start streaming
 ```
 
 `make stream-up` is separate from `make up` because the Spark driver is the biggest memory
-consumer. On a ~7.5 GB WSL, stop `kafka-ui` first if memory gets tight.
+consumer (4 GB limit, ~3.5 GiB used once warm). The full stack with gold uses about 7.1 GiB of
+WSL's 9.7; stop `kafka-ui` if memory gets tight.
+
+### The dashboard (http://localhost:8501, after `make gold-up`)
+
+Refreshes every 10 s from the last green dbt build. Top row: net revenue and orders over the
+last 60 minutes, refund rate (refunds issued / orders placed; ~12% with the simulator), how long
+ago gold was built, orders in gold. Charts: net revenue per minute, orders per minute, refund
+rate per minute, net revenue by city (city at order time). Pipeline health: Kafka lag (messages
+not yet in bronze, from the bronze checkpoint), quarantined rows, the latest order change in
+gold. With no simulator running, the charts stay flat and "Gold built" keeps counting up only
+if the dbt loop stops.
 WSL shuts down when idle and takes the containers with it; run `make up && make stream-up`
 and everything resumes from the checkpoints.
 
@@ -102,9 +127,14 @@ streaming/               bronze_ingest.py, silver_merge.py, run_all.py, common/ 
 chaos/                   reconcile.py, latency.py, drift.py, late_demo.py, event_delay.py, bronze_check.py,
                          kill_random.sh, run_chaos.sh, run_1.log / run_2.log (the recorded chaos runs)
 tests/                   simulator tests + streaming tests (decode, dedup, MERGE, replay, quarantine,
-                         schema drift, late events, idempotent writes)
-dbt/  airflow/  quality/ gold marts, DAGs, DQ suites                 (weeks 4–5)
-monitoring/ bench/       Prometheus+Grafana, benchmarks                (weeks 5–6)
+                         schema drift, late events, idempotent writes) + dashboard lag maths
+dbt/                     dbt-duckdb project: staging, users_snapshot (SCD2), fact_orders, dim_user,
+                         agg_revenue_minute, agg_refunds_minute, tests; run_loop.sh; image Dockerfile
+dashboard/               Streamlit app.py, health.py (Kafka lag, quarantine), snapshot.py (headless check)
+bench/                   silver_bench.sh, thread_cpu.sh, silver_bench.log
+spark/optimize.py        OPTIMIZE + VACUUM job
+airflow/  quality/       DAGs, DQ suites                              (week 5)
+monitoring/              Prometheus+Grafana                            (week 5)
 DECISIONS.md             architecture decision records
 ```
 
@@ -166,6 +196,34 @@ Caveats I want to be upfront about:
 - The breaking-type-change quarantine (`schema_incompatible`) is covered by unit tests, not by a
   live drill: I did not break the live connector.
 
+### Week 4
+
+| What | Result | How |
+|---|---|---|
+| dbt build | **PASS=29, ERROR=0** (1 snapshot, 9 models, 19 tests) in ~5-30 s | `make dbt-build`; the loop logs every build in `make gold-logs` |
+| dbt tests alone | **PASS=19, ERROR=0**: unique, not_null, relationships, accepted_values on order/payment status and tier, exactly one `is_current` per existing user, every order counted once in the SCD join, no order older than 5 min without a city | `make dbt-test` |
+| Dashboard updates while the simulator runs | two headless renders 70 s apart at 50 changes/s: net revenue (60 min) ₹171.7M → ₹200.0M, orders 7,364 → 8,105, gold built 33 s / 21 s ago | `docker compose exec dashboard python /app/snapshot.py` (Streamlit AppTest, fails on any page exception) |
+| Refund rate | 11.8-11.9% (simulator design: 4 refunds per 32 orders = 12.5%) | same |
+| SCD2 | 256 users with history (max 3 versions); orders shown in their city at order time, e.g. order 46741 Patiala then, Ahmedabad now | query on `dim_user` / `fact_orders` |
+| Reconcile after all of it | 0 / 0 / 0 / 0 on all 5 tables (48,641 orders) | `make reconcile` |
+| Memory, whole stack incl. gold, simulator on | streaming 3.51 of 3.9 GiB, connect 1.49 GiB, minio 0.60, kafka 0.63, schema-registry 0.35, dbt 0.11-0.27 of 1 GiB, dashboard 0.04-0.06 of 0.5 GiB; WSL 7.1 GiB used, 2.6 available | `docker stats` |
+
+**Silver performance, investigated (ADR-023).** The Week 3 guess (small files) was wrong:
+
+| | before OPTIMIZE | after OPTIMIZE |
+|---|---|---|
+| active files per silver table | 4-9, avg 20-495 KiB | 1, avg 67-1,964 KiB |
+| silver batch median at 50/s, 3 min | 46.7 s (cold JVM, 3 batches) | 30.5 s (warm, 5 batches) |
+| Delta MERGE `executionTimeMs`, median | 9.3 s | 11.6 s |
+
+OPTIMIZE did not help: the next MERGE turned 1 file back into 4, and Delta's own MERGE timer did
+not improve. The batch-time difference comes from JIT warm-up after the driver restart. The real
+cause: **every MERGE rewrites the whole table**. For example, an orders MERGE with 315 changed rows
+copied all 43,432 unchanged ones, so about 1.7k changes per batch cost about 170k rows written.
+Inside a 10.4 s MERGE: 5.4 s scan, 3.7 s rewrite. The JVM used about 4.7 cores at 50/s (JIT 0.6, GC 0.8).
+VACUUM RETAIN 168 HOURS deleted nothing (all replaced files are under 7 days old). Fix options
+are in ADR-023; none is applied yet.
+
 ## Troubleshooting
 
 - **Connector FAILED**: check `make logs`. The usual cause is Postgres not running with
@@ -184,6 +242,10 @@ Caveats I want to be upfront about:
 - **Deleted a streaming checkpoint?** Also set `TXN_EPOCH` to a new value (env of the `streaming`
   service) or wipe the Delta tables. Batch ids restart at 0 and the idempotent writes would
   skip them as "already done" (ADR-019).
+- **Dashboard says "No gold build published yet"** or "Gold built" keeps growing: `make gold-logs`.
+  A FAILED build lists the failing dbt test; the dashboard keeps showing the last good build.
+- **`make dbt-test` / `make dbt-build` while the loop runs**: they pause the loop themselves,
+  because DuckDB allows only one writer.
 - **`make drift` says the column already exists**: the drill only means something the first time;
   use `make drift COL=other_name` (or `TBL=products`).
 - **Decimal fields look like `"\u0004Ò"`** in the console consumer: Avro `decimal` is

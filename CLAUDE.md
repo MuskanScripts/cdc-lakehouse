@@ -28,7 +28,15 @@ events.
   and `list[str]` hints in anything that runs there.
 - Corporate laptop: if a download is blocked, stop and tell Rohit. Don't silently switch tools.
 
-## Current state (Weeks 1, 2 and 3 DONE)
+## Current state (Weeks 1-4 DONE)
+**Week 4 (done):** gold = dbt-duckdb (not dbt-spark, ADR-024) reading silver via the delta plugin,
+`make gold-up` runs a 30 s build loop (publishes `/data/gold.duckdb` by atomic rename only when
+all tests pass) + Streamlit dashboard on :8501 (not Metabase, ADR-024). SCD2 `users_snapshot` →
+`dim_user` (ADR-025); refund rate = refunds issued / orders placed per minute (ADR-026). dbt: 29
+nodes green, 19 tests. `make test` = 24. Streaming now 4 GB limit / 2200m heap (ADR-022), ~3.5
+GiB used warm. **Open, waiting on Rohit:** every silver MERGE rewrites the whole table
+(ADR-023, OPTIMIZE does not help); fix options listed there, nothing applied.
+
 **Week 3 (done):** schema drift via autoMerge + per-schema-id decode, type changes quarantined as
 `schema_incompatible` (ADR-018); idempotent `txnAppId`/`txnVersion` appends, bump `TXN_EPOCH` if
 a checkpoint is deleted (ADR-019); orders-per-minute with a 10 min watermark, third query in the

@@ -1,0 +1,19 @@
+version: 2
+
+# Silver Delta tables on MinIO, read with the dbt-duckdb `delta` plugin (delta-rs). Credentials
+# and endpoint come from the container env (AWS_ACCESS_KEY_ID, AWS_ENDPOINT_URL, AWS_ALLOW_HTTP,
+# ...), which delta-rs reads itself. Every row is loaded, including soft-deleted tombstones: the
+# staging models apply `NOT _is_deleted`.
+sources:
+  - name: silver
+    meta:
+      plugin: delta
+    tables:
+      - name: users
+        meta: {delta_table_path: "s3://lakehouse/silver/users"}
+      - name: orders
+        meta: {delta_table_path: "s3://lakehouse/silver/orders"}
+      - name: order_items
+        meta: {delta_table_path: "s3://lakehouse/silver/order_items"}
+      - name: payments
+        meta: {delta_table_path: "s3://lakehouse/silver/payments"}

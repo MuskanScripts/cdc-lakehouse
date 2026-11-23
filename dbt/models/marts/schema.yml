@@ -1,0 +1,60 @@
+version: 2
+
+models:
+  - name: fact_orders
+    description: One row per current order, joined to its payment; revenue net of refunds.
+    columns:
+      - name: order_id
+        tests: [unique, not_null]
+      - name: user_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_user')
+              field: user_id
+              # silver users and silver orders are separate Delta tables committed independently,
+              # so a brand-new user's first order can be read a batch before the user. Orders
+              # older than 5 minutes must always resolve.
+              config:
+                where: "created_at < now()::timestamp - interval 5 minute"
+      - name: status
+        tests:
+          - accepted_values:
+              values: [created, paid, shipped, delivered, cancelled, refunded]
+      - name: payment_status
+        tests:
+          - accepted_values:
+              values: [pending, success, failed, refunded]
+      - name: net_revenue
+        tests: [not_null]
+
+  - name: dim_user
+    description: SCD Type 2 user dimension from the users_snapshot; [valid_from, valid_to).
+    columns:
+      - name: user_version_key
+        tests: [unique, not_null]
+      - name: user_id
+        tests: [not_null]
+      - name: tier
+        tests:
+          - accepted_values:
+              values: [bronze, silver, gold, platinum]
+
+  - name: agg_revenue_minute
+    description: Orders and revenue per minute and city, city taken at order time.
+    columns:
+      - name: minute
+        tests: [not_null]
+      - name: city
+        tests: [not_null]
+
+  - name: agg_refunds_minute
+    description: Refunds per minute in which they were issued (refunded_at).
+    columns:
+      - name: minute
+        tests: [unique, not_null]
+      - name: refunds
+        tests: [not_null]
+
+  - name: gold_build_info
+    description: Build timestamp and input freshness for the dashboard.

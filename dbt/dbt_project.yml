@@ -1,0 +1,21 @@
+name: lakehouse
+version: "1.0.0"
+config-version: 2
+profile: lakehouse
+
+model-paths: ["models"]
+snapshot-paths: ["snapshots"]
+test-paths: ["tests"]
+target-path: "/tmp/dbt-target"     # keep build artefacts out of the mounted repo
+log-path: "/tmp/dbt-logs"
+
+models:
+  lakehouse:
+    staging:
+      # tables, not views: the delta plugin registers each silver source as an in-session
+      # DataFrame, so a view over it breaks in any later session (e.g. a standalone `dbt test`).
+      # A table also gives the whole build ONE read of each silver table.
+      +materialized: table
+      +schema: staging
+    marts:
+      +materialized: table
