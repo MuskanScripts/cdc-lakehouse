@@ -1,6 +1,6 @@
 # CLAUDE.md — CDC Lakehouse (portfolio project 1)
 
-You are helping Rohit build a real-time CDC lakehouse as a data-engineering portfolio
+You are helping Muskan build a real-time CDC lakehouse as a data-engineering portfolio
 project. It must run with one command, be correct under failure, and be explainable in an
 interview. Read this whole file before doing anything.
 
