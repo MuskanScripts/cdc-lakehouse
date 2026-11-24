@@ -4,7 +4,7 @@
 \set ON_ERROR_STOP on
 BEGIN;
 UPDATE orders SET total = -total, updated_at = now()
-WHERE coupon_code = 'BAD_BATCH' AND total < 0
+WHERE total < 0   -- only the drill's rows: the CHECK below forbids negatives at all other times
 RETURNING order_id, total, updated_at;
 ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_total_check;            -- safe to run twice
 ALTER TABLE orders ADD CONSTRAINT orders_total_check CHECK (total >= 0);   -- as in postgres/init.sql
