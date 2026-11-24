@@ -64,7 +64,8 @@ to watch retained WAL.
 **Why.** While Debezium is down, the replication slot keeps WAL so no change is lost, but disk
 grows without limit. The cap protects production. If it's exceeded, the slot is invalidated
 and Debezium must re-snapshot, which is an alertable event and not silent data loss.
-Heartbeats advance the slot even when the captured tables are quiet.
+Heartbeats advance the slot even when the captured tables are quiet. (Correction, ADR-037: only
+once the heartbeat writes a row with `heartbeat.action.query`; the interval alone did not.)
 
 ## ADR-009: Signal table for incremental snapshots
 **Why.** `public.debezium_signal` lets Debezium re-snapshot a table in PK chunks while
@@ -736,3 +737,34 @@ to reconcile PASS (0 difference on all 5 tables) plus 42 passing tests.
 **Lesson.** A schema change made in a drill is part of the schema. Any test I only run on my own
 long-lived stack inherits every manual step I ever did to it. Only a fresh clone shows what the
 repo itself really sets up.
+
+## ADR-037: A heartbeat table, so an idle shop doesn't pin WAL (corrects ADR-008)
+**What I saw.** In Grafana the replication slot lag kept climbing while the simulator was idle:
+39.9 MB to 45.7 MB in one hour, about 0.5 MB every 5 minutes, with no shop writes since 03:16.
+**Why.** A replication slot covers the whole Postgres server, not one database. Airflow's metadata
+DB lives on the same server and writes WAL all the time. Debezium only tells Postgres "I'm done up
+to here" (the confirmed flush LSN) after it processes a change from its own publication. With the
+shop idle there are none, so it never confirmed anything, and Postgres kept every byte of
+Airflow's WAL for the slot. ADR-008 said the 10 s heartbeat advances the slot when the tables are
+quiet. That was wrong: `heartbeat.interval.ms` alone only sends a Kafka heartbeat record, and with
+no new event from Postgres it has no newer LSN to confirm.
+**Decision.** I added a one-row table `heartbeat.debezium_heartbeat` to `postgres/init.sql` and
+the publication. I also set `heartbeat.action.query`, an UPSERT of `(1, now())`, to run every
+10 s. Each heartbeat is now a real change on a captured table. Debezium receives it, and on the
+next offset commit (Connect commits every 60 s by default) it confirms that LSN, which releases
+all the WAL before it. The heartbeat table is in `table.include.list`, as the Debezium docs ask.
+**Why its own schema.** Its topic is `ecom.heartbeat.debezium_heartbeat`, which does not match
+bronze's `ecom\.public\..*` pattern. So bronze, silver, reconcile and the dashboard's lag check
+never see it, and I didn't have to change the streaming code or its checkpoints.
+**Proof.** With the simulator stopped and Airflow running, I sampled `pg_replication_slots` every
+30 s for 5 minutes (07:44-07:49 UTC). Lag stayed between 5 KB and 458 KB: a sawtooth that resets on
+every offset commit, with no upward trend. Prometheus shows the same, 45.7 MB at 07:40 and then
+8-10 KB. The heartbeat topic got 77 messages, bronze ran 0 batches in those 15 minutes, and
+reconcile still passes with 0 difference on all 5 tables.
+**Rejected.** A heartbeat table in `public`: bronze would subscribe to its topic and write a
+bronze table nobody needs. Changing bronze's pattern to exclude it means touching a running
+query's subscription. Moving Airflow's DB to its own Postgres: that's the production answer, but
+it costs another container's memory on this laptop.
+**Trade-off.** One tiny UPDATE every 10 s on the source, and 8,640 small messages a day in a
+topic nobody reads. On an existing database the DDL has to be applied once by hand; `init.sql`
+only runs on a new volume.

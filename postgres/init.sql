@@ -67,7 +67,19 @@ CREATE TABLE debezium_signal (
     data VARCHAR(2048)
 );
 
+-- Debezium heartbeat table (ADR-037). Every 10 s the connector UPSERTs one row here
+-- (heartbeat.action.query), so the slot always has a change of its own to confirm, even when
+-- the shop is idle and only other databases on this server (Airflow) write WAL. Without it
+-- the slot pins that WAL and the retained size grows forever. It lives in its own schema,
+-- so its topic is ecom.heartbeat.debezium_heartbeat, outside bronze's ecom.public.* pattern.
+CREATE SCHEMA heartbeat;
+CREATE TABLE heartbeat.debezium_heartbeat (
+    id INT PRIMARY KEY,
+    ts TIMESTAMPTZ NOT NULL
+);
+
 -- Explicit publication (connector uses publication.autocreate.mode=disabled), so the
 -- CDC user does not need superuser rights to create it in production.
 CREATE PUBLICATION dbz_publication
-    FOR TABLE users, products, orders, order_items, payments, debezium_signal;
+    FOR TABLE users, products, orders, order_items, payments, debezium_signal,
+              heartbeat.debezium_heartbeat;
