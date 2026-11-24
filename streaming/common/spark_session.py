@@ -40,7 +40,10 @@ def get_spark(app_name: str, *, master: str | None = None, s3: bool = True,
     if master:
         b = b.master(master)
     if with_packages:
-        b = b.config("spark.jars.packages", PACKAGES).config("spark.jars.ivy", "/root/.ivy2")
+        # ~/.ivy2 is /root/.ivy2 in the containers (they run as root, volume ivy_cache) and the
+        # runner's own home in CI; a hardcoded /root/.ivy2 is not writable there.
+        ivy = os.environ.get("SPARK_IVY_DIR") or os.path.expanduser("~/.ivy2")
+        b = b.config("spark.jars.packages", PACKAGES).config("spark.jars.ivy", ivy)
     if s3:
         b = (
             b.config("spark.hadoop.fs.s3a.endpoint", S3_ENDPOINT)

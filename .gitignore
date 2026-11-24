@@ -16,3 +16,6 @@ dbt/dbt_packages/
 chaos/.bench_q2_range
 bench/.sampler_*.log
 bench/.rate_*.log
+
+# local-only agent instructions, kept off GitHub
+CLAUDE.md
