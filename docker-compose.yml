@@ -186,6 +186,7 @@ services:
       KAFKA_BOOTSTRAP: kafka:29092
       SCHEMA_REGISTRY_URL: http://schema-registry:8081
       S3_ENDPOINT: http://minio:9000
+      SILVER_TRIGGER_INTERVAL: ${SILVER_TRIGGER:-10 seconds}   # ADR-034 (make bench-trigger)
     volumes:
       - ./streaming:/opt/project/streaming
       - ivy_cache:/root/.ivy2

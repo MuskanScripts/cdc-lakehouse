@@ -1,8 +1,10 @@
-.PHONY: help up down clean ps logs register status topics consume simulate simulate-fast check spark-smoke psql slot-lag test stream-up stream-logs stream-down reconcile latency drift late-demo late-stats bronze-check chaos bench-silver table-stats optimize merge-profile thread-cpu dv-probe gold-up gold-down gold-logs dbt-build dbt-test airflow-up airflow-down airflow-logs monitoring-up monitoring-down dq gold-cycle bad-batch bad-batch-fix silver-damage backfill optimize-dag kafka-ui stats
+.PHONY: help up down clean ps logs register status topics consume simulate simulate-fast check spark-smoke psql slot-lag test stream-up stream-logs stream-down reconcile latency drift late-demo late-stats bronze-check chaos bench-silver table-stats optimize merge-profile thread-cpu dv-probe gold-up gold-down gold-logs dbt-build dbt-test airflow-up airflow-down airflow-logs monitoring-up monitoring-down dq gold-cycle bad-batch bad-batch-fix silver-damage backfill optimize-dag kafka-ui stats bench-trigger bench-rate bench-optimize
 
 TABLE ?= orders
 RATE  ?= 200
 DURATION ?= 0
+# benchmarks default to 50 changes/s; RATE ?= 200 above would otherwise win over $(or ...)
+BENCH_RATE = $(if $(filter command line environment,$(origin RATE)),$(RATE),50)
 ALL_PROFILES := --profile sim --profile stream --profile gold --profile orchestration --profile monitoring --profile ui
 export DOCKER_GID := $(shell stat -c %g /var/run/docker.sock 2>/dev/null || echo 1001)
 
@@ -92,10 +94,19 @@ bronze-check:    ## every Kafka offset exactly once in bronze?
 	docker compose run --rm reconcile bronze_check.py
 
 chaos:           ## simulator + 10 random kills of streaming/connect/kafka, then reconcile (RATE=100 KILLS=10)
-	RATE=$(or $(RATE),100) KILLS=$(or $(KILLS),10) ./chaos/run_chaos.sh
+	RATE=$(if $(filter command line environment,$(origin RATE)),$(RATE),100) KILLS=$(or $(KILLS),10) ./chaos/run_chaos.sh
 
 bench-silver:    ## silver batch timings under load (RATE=50 BENCH_SECONDS=180 LABEL=before), appends bench/silver_bench.log
-	RATE=$(or $(RATE),50) BENCH_SECONDS=$(or $(BENCH_SECONDS),180) LABEL=$(or $(LABEL),run) ./bench/silver_bench.sh
+	RATE=$(BENCH_RATE) BENCH_SECONDS=$(or $(BENCH_SECONDS),180) LABEL=$(or $(LABEL),run) ./bench/silver_bench.sh
+
+bench-trigger:   ## Week 6: silver trigger 10 vs 30 vs 60 s, same load (TRIGGERS="10 30 60" RATE=50 BENCH_SECONDS=300 KEEP=10)
+	TRIGGERS="$(or $(TRIGGERS),10 30 60)" RATE=$(BENCH_RATE) BENCH_SECONDS=$(or $(BENCH_SECONDS),300) KEEP=$(or $(KEEP),10) bash ./bench/silver_trigger.sh
+
+bench-rate:      ## Week 6: Kafka + silver lag trend at each rate for 5 min (RATES="100 200 400" BENCH_SECONDS=300 SIM_ARGS=--fast)
+	RATES="$(or $(RATES),100 200 400)" BENCH_SECONDS=$(or $(BENCH_SECONDS),300) SIM_ARGS="$(SIM_ARGS)" bash ./bench/max_rate.sh
+
+bench-optimize:  ## Week 6: file count, avg size and a fixed query's time before/after OPTIMIZE (+ZORDER on silver)
+	bash ./bench/optimize_bench.sh
 
 table-stats:     ## active file count + avg file size per Delta table (LAYER=silver)
 	docker compose run --rm reconcile table_stats.py $(or $(LAYER),silver)
@@ -105,7 +116,7 @@ optimize:        ## stop streaming, OPTIMIZE + VACUUM RETAIN 168 HOURS every sil
 	docker compose up -d spark
 	docker compose exec -T spark /opt/spark/bin/spark-submit --driver-memory 1500m \
 	  --packages io.delta:delta-spark_2.12:3.2.1,org.apache.hadoop:hadoop-aws:3.3.4 \
-	  --conf spark.jars.ivy=/root/.ivy2 /opt/project/spark/optimize.py $(or $(LAYER),silver) ; \
+	  --conf spark.jars.ivy=/root/.ivy2 /opt/project/spark/optimize.py $(or $(LAYER),silver) $(if $(ZORDER),--zorder) ; \
 	  rc=$$?; docker compose --profile stream up -d streaming; exit $$rc
 
 merge-profile:   ## Delta's own timings for the last N silver MERGEs (N=3): exec/scan/rewrite, rows copied

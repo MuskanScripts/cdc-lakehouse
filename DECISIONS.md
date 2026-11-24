@@ -652,3 +652,66 @@ files (53-127 s per table); OPTIMIZE itself took 2.5-12 s per table (orders 5 fi
 **Lesson.** Whatever an orchestrator starts outside its own process tree, it has to be able to
 find and stop again, and "resume what I paused" has to survive the process that paused it. This is
 the ADR-027 lesson again from another side: what PID 1 does, and who owns a process, matter.
+
+## ADR-034: Silver trigger stays at 10 s (30 s and 60 s measured, not better)
+**Question.** ADR-023/028 left one cheap idea: if a MERGE costs about the same whatever its size,
+fewer and bigger MERGEs (a longer silver trigger) should help. I measured it before changing anything.
+**Experiment** (`make bench-trigger`, `bench/silver_trigger.sh`). Silver alone gets the new
+interval (`SILVER_TRIGGER_INTERVAL`, bronze stays at 10 s). Every run: driver recreated (cold JVM),
+120 s warm-up at 50 changes/s, then 300 s measured at 50/s with Kafka lag and silver lag sampled every
+15 s, Delta's `executionTimeMs` for every MERGE in the window, reconcile, and latency for exactly the
+rows changed in the window. Airflow stopped, gold loop and monitoring running. I ran 10 and 30 twice,
+the second time in reverse order, to see run-to-run noise.
+
+| silver trigger | 10 s | 10 s (repeat) | 30 s | 30 s (repeat) | 60 s |
+|---|---|---|---|---|---|
+| silver batches in 300 s | 10 | 10 | 10 | 10 | 7 |
+| batch time median / max | 29.1 / 41.6 s | 27.6 / 32.7 s | 29.2 / 32.9 s | 32.2 / 40.5 s | 30.3 / 72.5 s |
+| rows per batch, median | 1,676 | 1,564 | 1,426 | 1,752 | 2,921 |
+| MERGE `executionTimeMs`, median | 12.8 s | 12.2 s | 12.9 s | 12.6 s | 12.5 s |
+| orders rows per MERGE, median | 648 | 637 | 546 | 649 | 1,145 |
+| latency p50 / p95 | 42.8 / 63.5 s | **36.2 / 53.6 s** | 36.1 / 56.1 s | 40.8 / 60.1 s | 48.2 / 73.1 s |
+| silver lag, median | 60.9 s | 48.3 s | 52.2 s | 57.2 s | 67.8 s |
+| reconcile | PASS | PASS | PASS | PASS | PASS |
+
+**What it shows.**
+1. **10 s and 30 s are the same thing.** A batch takes about 29 s, which is longer than a 10 s
+   trigger, so Spark simply starts the next batch as soon as the last one ends. Both settings gave 10
+   batches in 300 s. The latency differences between them (36-43 s p50) are as big between two runs
+   of the same setting as between the settings, so they are noise.
+2. **The MERGE cost really is fixed.** At 60 s each MERGE got about twice the rows (orders 1,145 vs
+   about 640) and took the same 12.5 s. This confirms ADR-028: the time goes to scanning the target,
+   job overhead and S3 round trips, not to the number of changed rows.
+3. **So a longer trigger only adds waiting.** At 60 s silver sits idle about half the time, and
+   latency got worse: p50 +5 to +12 s, p95 +10 to +20 s.
+4. Kafka lag (Kafka → bronze) was the same in every run: median 800-950 messages, about 16-19 s of
+   input. Bronze's trigger did not change, so this is a control, and it shows the runs were comparable.
+**Decision.** Keep 10 s. No change to code defaults. The variable stays, so the experiment can be
+repeated (`make bench-trigger TRIGGERS="10 60"`).
+**Why it isn't a capacity lever either.** Because a batch already takes longer than the trigger,
+silver batches grow by themselves when load grows: each batch takes whatever bronze wrote since the
+last one, up to `maxFilesPerTrigger=20` files per table, which is 200 s of bronze. A longer trigger
+would only raise the ceiling if batches were shorter than the trigger, and they aren't.
+**Rejected.** 30 s (no measurable gain, the same behaviour) and 60 s (worse latency, no gain at this
+load).
+**What would actually help** (unchanged from ADR-028): make each MERGE cheaper, either with a
+key-range predicate in the ON clause so it scans less of the target, or by merging fewer tables per
+batch (users and products change rarely). The max-rate test in `bench/results.md` shows where the
+current design runs out.
+
+## ADR-035: The nightly optimize also compacts bronze; ZORDER on silver is kept but doesn't last
+**Measured** (`make bench-optimize`, `bench/results.md`): bronze had 2,462 active files averaging
+28 KiB, because it appends one file per table per 10 s trigger. A full read of `bronze/orders` (what a
+backfill does) took 1.97 s for 28 MB. After OPTIMIZE: 5 files, and the same read took 0.06 s, 33x
+faster. 180 s of streaming afterwards added only 13 files (0.11 s). Silver had only 31 files (344 KiB
+average): its problem is rewriting, not small files (ADR-023). ZORDER made a key-range query on
+silver/orders touch 1 file instead of 4, but after 180 s of MERGEs it was back to 4 files covering
+the whole id range.
+**Decision.** The `optimize` DAG now runs OPTIMIZE + VACUUM 168 h on bronze after silver, inside the
+same streaming pause. Bronze gets compaction only: it has no business key to ZORDER by. The silver
+stream skips these commits because they have `dataChange=false`.
+**Cost.** The pause grew to 15 min 24 s in the first run (03:21-03:36 UTC). Most of it is VACUUM
+listing old files (53-86 s per table); OPTIMIZE itself took 10-19 s per bronze table.
+**Rejected.** Dropping the silver ZORDER. It costs 3-20 s per table and is harmless, and with the
+key-range MERGE idea (ADR-028) it would start to matter. Reducing the pause by running VACUUM less
+often: it is the next thing to try if 15 minutes a night becomes a problem.

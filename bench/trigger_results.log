@@ -1,0 +1,188 @@
+=================== silver trigger 10s   2026-11-23T20:46:36Z
+  SILVER_TRIGGER_INTERVAL=10 seconds
+stopped after 300.0s, 15002 row changes (50.0/s)
+trigger-10s: rate=50/s batches=10 batch_s median=29.1 p90=41.6 max=41.6 | rows/batch median=1676 | median merge_s users=18.2 products=18.9 orders=18.0 order_items=19.5 payments=19.1
+LAG trigger-10s: kafka_lag: first=1566 median=857 max=1651 last=180 slope/min=-108.9 | silver_lag_s: first=47.7 median=60.9 max=78.6 last=38.4 slope/min=-2.4
+      t=    0s kafka_lag=1566 silver_lag_s=47.7
+      t=   15s kafka_lag=536 silver_lag_s=62.5
+      t=   30s kafka_lag=819 silver_lag_s=77.5
+      t=   45s kafka_lag=869 silver_lag_s=59.9
+      t=   60s kafka_lag=1597 silver_lag_s=75.5
+      t=   75s kafka_lag=1651 silver_lag_s=49.8
+      t=   90s kafka_lag=614 silver_lag_s=63.7
+      t=  105s kafka_lag=1383 silver_lag_s=78.5
+      t=  120s kafka_lag=1643 silver_lag_s=59.9
+      t=  135s kafka_lag=1232 silver_lag_s=50.1
+      t=  150s kafka_lag=1448 silver_lag_s=63.8
+      t=  165s kafka_lag=614 silver_lag_s=78.6
+      t=  180s kafka_lag=845 silver_lag_s=59.8
+      t=  195s kafka_lag=972 silver_lag_s=75.0
+      t=  210s kafka_lag=487 silver_lag_s=48.0
+      t=  225s kafka_lag=771 silver_lag_s=62.9
+      t=  240s kafka_lag=1513 silver_lag_s=53.2
+      t=  255s kafka_lag=601 silver_lag_s=68.1
+      t=  270s kafka_lag=1326 silver_lag_s=46.7
+      t=  285s kafka_lag=768 silver_lag_s=61.8
+      t=  300s kafka_lag=513 silver_lag_s=49.0
+      t=  315s kafka_lag=180 silver_lag_s=38.4
+    LAG trigger-10s: kafka_lag: first=1566 median=857 max=1651 last=180 slope/min=-108.9 | silver_lag_s: first=47.7 median=60.9 max=78.6 last=38.4 slope/min=-2.4
+  users        merges= 10 exec_s median= 12.9 max= 22.3 src_rows median=41
+  products     merges= 10 exec_s median= 12.0 max= 21.0 src_rows median=32
+  orders       merges= 11 exec_s median= 13.3 max= 22.5 src_rows median=648
+  order_items  merges= 10 exec_s median= 13.5 max= 22.8 src_rows median=426
+  payments     merges= 10 exec_s median= 12.7 max= 19.4 src_rows median=488
+MERGE trigger-10s: merges=51 executionTimeMs median=12788 max=22753 | per table median s users=12.9 products=12.0 orders=13.3 order_items=13.5 payments=12.7
+  trigger-10s RECONCILE PASS: 0 difference on all tables
+  trigger-10s latency ALL          10284    42.84    63.51    68.43    71.40
+  trigger-10s latency silver_ts - Debezium source commit ts (Kafka+Spark share): p50=42.84s p95=63.51s
+=================== silver trigger 30s   2026-11-23T20:56:38Z
+  SILVER_TRIGGER_INTERVAL=30 seconds
+stopped after 300.0s, 15000 row changes (50.0/s)
+trigger-30s: rate=50/s batches=10 batch_s median=29.2 p90=32.9 max=32.9 | rows/batch median=1426 | median merge_s users=17.2 products=17.2 orders=16.9 order_items=16.7 payments=17.2
+LAG trigger-30s: kafka_lag: first=1223 median=947 max=1335 last=88 slope/min=-57.6 | silver_lag_s: first=51.8 median=52.2 max=75.6 last=55.5 slope/min=-2.8
+      t=    0s kafka_lag=1223 silver_lag_s=51.8
+      t=   15s kafka_lag=1173 silver_lag_s=66.7
+      t=   30s kafka_lag=588 silver_lag_s=59.9
+      t=   45s kafka_lag=871 silver_lag_s=75.6
+      t=   60s kafka_lag=1101 silver_lag_s=43.0
+      t=   75s kafka_lag=819 silver_lag_s=58.0
+      t=   90s kafka_lag=1071 silver_lag_s=53.0
+      t=  105s kafka_lag=689 silver_lag_s=68.0
+      t=  120s kafka_lag=1021 silver_lag_s=36.4
+      t=  135s kafka_lag=1128 silver_lag_s=51.7
+      t=  150s kafka_lag=1335 silver_lag_s=51.4
+      t=  165s kafka_lag=741 silver_lag_s=66.3
+      t=  180s kafka_lag=978 silver_lag_s=41.7
+      t=  195s kafka_lag=916 silver_lag_s=56.8
+      t=  210s kafka_lag=1294 silver_lag_s=50.9
+      t=  225s kafka_lag=659 silver_lag_s=65.8
+      t=  240s kafka_lag=845 silver_lag_s=37.4
+      t=  255s kafka_lag=895 silver_lag_s=52.6
+      t=  270s kafka_lag=1097 silver_lag_s=33.9
+      t=  285s kafka_lag=689 silver_lag_s=48.9
+      t=  300s kafka_lag=998 silver_lag_s=40.2
+      t=  315s kafka_lag=88 silver_lag_s=55.5
+    LAG trigger-30s: kafka_lag: first=1223 median=947 max=1335 last=88 slope/min=-57.6 | silver_lag_s: first=51.8 median=52.2 max=75.6 last=55.5 slope/min=-2.8
+  users        merges= 11 exec_s median= 12.6 max= 15.7 src_rows median=35
+  products     merges= 10 exec_s median= 12.9 max= 15.8 src_rows median=26
+  orders       merges= 10 exec_s median= 13.1 max= 16.6 src_rows median=546
+  order_items  merges= 10 exec_s median= 13.2 max= 14.9 src_rows median=398
+  payments     merges= 10 exec_s median= 13.0 max= 15.9 src_rows median=416
+MERGE trigger-30s: merges=51 executionTimeMs median=12920 max=16566 | per table median s users=12.6 products=12.9 orders=13.1 order_items=13.2 payments=13.0
+  trigger-30s RECONCILE PASS: 0 difference on all tables
+  trigger-30s latency ALL          10131    36.14    56.14    60.40    62.16
+  trigger-30s latency silver_ts - Debezium source commit ts (Kafka+Spark share): p50=36.13s p95=56.13s
+=================== silver trigger 60s   2026-11-23T21:06:11Z
+  SILVER_TRIGGER_INTERVAL=60 seconds
+stopped after 300.0s, 15002 row changes (50.0/s)
+trigger-60s: rate=50/s batches=7 batch_s median=30.3 p90=72.5 max=72.5 | rows/batch median=2921 | median merge_s users=15.4 products=16.3 orders=21.8 order_items=18.4 payments=18.6
+LAG trigger-60s: kafka_lag: first=687 median=797 max=1862 last=0 slope/min=-138.7 | silver_lag_s: first=97.9 median=67.8 max=127.1 last=42.5 slope/min=-8.8
+      t=    0s kafka_lag=687 silver_lag_s=97.9
+      t=   15s kafka_lag=872 silver_lag_s=112.5
+      t=   30s kafka_lag=1594 silver_lag_s=127.1
+      t=   45s kafka_lag=1862 silver_lag_s=65.8
+      t=   60s kafka_lag=1209 silver_lag_s=80.7
+      t=   75s kafka_lag=1395 silver_lag_s=40.1
+      t=   90s kafka_lag=486 silver_lag_s=54.8
+      t=  105s kafka_lag=537 silver_lag_s=69.7
+      t=  120s kafka_lag=852 silver_lag_s=86.4
+      t=  135s kafka_lag=968 silver_lag_s=43.1
+      t=  150s kafka_lag=773 silver_lag_s=58.2
+      t=  165s kafka_lag=498 silver_lag_s=71.9
+      t=  180s kafka_lag=821 silver_lag_s=87.0
+      t=  195s kafka_lag=1004 silver_lag_s=41.0
+      t=  210s kafka_lag=617 silver_lag_s=56.2
+      t=  225s kafka_lag=505 silver_lag_s=70.9
+      t=  240s kafka_lag=826 silver_lag_s=86.0
+      t=  255s kafka_lag=1061 silver_lag_s=41.8
+      t=  270s kafka_lag=565 silver_lag_s=56.4
+      t=  285s kafka_lag=579 silver_lag_s=71.2
+      t=  300s kafka_lag=720 silver_lag_s=27.3
+      t=  315s kafka_lag=0 silver_lag_s=42.5
+    LAG trigger-60s: kafka_lag: first=687 median=797 max=1862 last=0 slope/min=-138.7 | silver_lag_s: first=97.9 median=67.8 max=127.1 last=42.5 slope/min=-8.8
+  users        merges=  6 exec_s median=  9.7 max= 18.4 src_rows median=89
+  products     merges=  6 exec_s median= 10.2 max= 18.7 src_rows median=51
+  orders       merges=  6 exec_s median= 12.7 max= 20.9 src_rows median=1145
+  order_items  merges=  6 exec_s median= 14.1 max= 19.2 src_rows median=770
+  payments     merges=  6 exec_s median= 12.2 max= 17.2 src_rows median=869
+MERGE trigger-60s: merges=30 executionTimeMs median=12496 max=20946 | per table median s users=9.7 products=10.2 orders=12.7 order_items=14.1 payments=12.2
+  trigger-60s RECONCILE PASS: 0 difference on all tables
+  trigger-60s latency ALL          10280    48.17    73.13    76.82    79.50
+  trigger-60s latency silver_ts - Debezium source commit ts (Kafka+Spark share): p50=48.17s p95=73.12s
+=================== restoring silver trigger 10s   2026-11-24T02:01:53Z
+=================== REPEAT PASS (reverse order: 30 then 10)
+=================== silver trigger 30s   2026-11-24T02:03:02Z
+  SILVER_TRIGGER_INTERVAL=30 seconds
+stopped after 300.0s, 15001 row changes (50.0/s)
+trigger-30s: rate=50/s batches=10 batch_s median=32.2 p90=40.5 max=40.5 | rows/batch median=1752 | median merge_s users=19.2 products=19.3 orders=19.6 order_items=20.4 payments=19.2
+LAG trigger-30s: kafka_lag: first=930 median=932 max=1827 last=287 slope/min=-84.0 third1_med=930 third3_med=842 | silver_lag_s: first=54.4 median=57.2 max=76.6 last=34.6 slope/min=-2.3 third1_med=61.2 third3_med=55.2
+      t=    0s kafka_lag=930 silver_lag_s=54.4
+      t=   15s kafka_lag=590 silver_lag_s=69.2
+      t=   30s kafka_lag=1333 silver_lag_s=53.8
+      t=   45s kafka_lag=638 silver_lag_s=68.8
+      t=   60s kafka_lag=930 silver_lag_s=46.4
+      t=   75s kafka_lag=978 silver_lag_s=61.2
+      t=   90s kafka_lag=1743 silver_lag_s=76.6
+      t=  105s kafka_lag=1827 silver_lag_s=50.7
+      t=  120s kafka_lag=1444 silver_lag_s=65.7
+      t=  135s kafka_lag=1303 silver_lag_s=44.8
+      t=  150s kafka_lag=1205 silver_lag_s=60.1
+      t=  165s kafka_lag=1255 silver_lag_s=74.8
+      t=  180s kafka_lag=1490 silver_lag_s=55.4
+      t=  195s kafka_lag=716 silver_lag_s=70.2
+      t=  210s kafka_lag=769 silver_lag_s=43.9
+      t=  225s kafka_lag=842 silver_lag_s=59.0
+      t=  240s kafka_lag=1236 silver_lag_s=46.2
+      t=  255s kafka_lag=844 silver_lag_s=61.4
+      t=  270s kafka_lag=433 silver_lag_s=55.2
+      t=  285s kafka_lag=726 silver_lag_s=70.4
+      t=  300s kafka_lag=934 silver_lag_s=39.6
+      t=  315s kafka_lag=287 silver_lag_s=34.6
+    LAG trigger-30s: kafka_lag: first=930 median=932 max=1827 last=287 slope/min=-84.0 third1_med=930 third3_med=842 | silver_lag_s: first=54.4 median=57.2 max=76.6 last=34.6 slope/min=-2.3 third1_med=61.2 third3_med=55.2
+  users        merges=  9 exec_s median= 12.3 max= 21.9 src_rows median=47
+  products     merges=  9 exec_s median= 11.2 max= 19.3 src_rows median=34
+  orders       merges= 10 exec_s median= 14.1 max= 21.9 src_rows median=649
+  order_items  merges= 10 exec_s median= 13.3 max= 21.9 src_rows median=454
+  payments     merges=  9 exec_s median= 12.6 max= 18.7 src_rows median=513
+MERGE trigger-30s: merges=47 executionTimeMs median=12570 max=21937 | per table median s users=12.3 products=11.2 orders=14.1 order_items=13.3 payments=12.6
+  trigger-30s RECONCILE PASS: 0 difference on all tables
+  trigger-30s latency ALL          10295    40.75    60.10    64.39    70.09
+  trigger-30s latency silver_ts - Debezium source commit ts (Kafka+Spark share): p50=40.75s p95=60.10s
+=================== silver trigger 10s   2026-11-24T02:12:29Z
+  SILVER_TRIGGER_INTERVAL=10 seconds
+stopped after 300.0s, 15001 row changes (50.0/s)
+trigger-10s: rate=50/s batches=10 batch_s median=27.6 p90=32.7 max=32.7 | rows/batch median=1564 | median merge_s users=15.8 products=16.5 orders=16.4 order_items=16.4 payments=16.7
+LAG trigger-10s: kafka_lag: first=552 median=878 max=1498 last=181 slope/min=-38.7 third1_med=909 third3_med=920 | silver_lag_s: first=59.2 median=48.3 max=79.2 last=44.4 slope/min=-2.9 third1_med=59.2 third3_med=45.4
+      t=    0s kafka_lag=552 silver_lag_s=59.2
+      t=   15s kafka_lag=909 silver_lag_s=49.0
+      t=   30s kafka_lag=846 silver_lag_s=64.0
+      t=   45s kafka_lag=713 silver_lag_s=79.2
+      t=   60s kafka_lag=1429 silver_lag_s=47.6
+      t=   75s kafka_lag=1498 silver_lag_s=63.3
+      t=   90s kafka_lag=1375 silver_lag_s=45.9
+      t=  105s kafka_lag=592 silver_lag_s=60.7
+      t=  120s kafka_lag=821 silver_lag_s=41.0
+      t=  135s kafka_lag=1045 silver_lag_s=33.1
+      t=  150s kafka_lag=593 silver_lag_s=47.0
+      t=  165s kafka_lag=994 silver_lag_s=44.7
+      t=  180s kafka_lag=1178 silver_lag_s=59.7
+      t=  195s kafka_lag=716 silver_lag_s=39.4
+      t=  210s kafka_lag=766 silver_lag_s=54.6
+      t=  225s kafka_lag=1003 silver_lag_s=45.4
+      t=  240s kafka_lag=741 silver_lag_s=60.4
+      t=  255s kafka_lag=1072 silver_lag_s=40.3
+      t=  270s kafka_lag=920 silver_lag_s=55.4
+      t=  285s kafka_lag=1197 silver_lag_s=34.3
+      t=  300s kafka_lag=719 silver_lag_s=49.3
+      t=  315s kafka_lag=181 silver_lag_s=44.4
+    LAG trigger-10s: kafka_lag: first=552 median=878 max=1498 last=181 slope/min=-38.7 third1_med=909 third3_med=920 | silver_lag_s: first=59.2 median=48.3 max=79.2 last=44.4 slope/min=-2.9 third1_med=59.2 third3_med=45.4
+  users        merges= 11 exec_s median= 10.4 max= 14.7 src_rows median=47
+  products     merges= 11 exec_s median= 12.0 max= 16.5 src_rows median=27
+  orders       merges= 11 exec_s median= 12.3 max= 16.8 src_rows median=637
+  order_items  merges= 11 exec_s median= 11.5 max= 15.5 src_rows median=400
+  payments     merges= 11 exec_s median= 12.8 max= 14.4 src_rows median=373
+MERGE trigger-10s: merges=55 executionTimeMs median=12240 max=16751 | per table median s users=10.4 products=12.0 orders=12.3 order_items=11.5 payments=12.8
+  trigger-10s RECONCILE PASS: 0 difference on all tables
+  trigger-10s latency ALL          10401    36.21    53.57    59.45    66.73
+  trigger-10s latency silver_ts - Debezium source commit ts (Kafka+Spark share): p50=36.21s p95=53.57s
+=================== restoring silver trigger 10s   2026-11-24T02:22:32Z

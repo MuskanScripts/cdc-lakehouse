@@ -4,28 +4,119 @@
 > MERGE it into a Delta lakehouse, enforce quality gates, and serve live revenue and refund
 > numbers that match the source exactly, even after crashes, schema changes and late events.
 
-**Status:** Week 5 of 6. Capture (Postgres → Debezium → Kafka), bronze and silver
-(Kafka → Delta on MinIO, idempotent MERGE), schema drift, an event-time aggregate with a
-late-event table, a chaos test, a gold layer (dbt-duckdb: fact_orders, SCD2 dim_user,
-revenue per minute × city) behind a live dashboard on http://localhost:8501, and now a **data
-quality gate** (Soda) that blocks any gold publish with bad data, **Airflow** for DQ, nightly
-OPTIMIZE/VACUUM and backfills, and **Prometheus + Grafana**. `make reconcile` shows 0 difference
-against Postgres on all 5 tables after every run so far, including two runs with 10 random SIGKILLs
-each, a bad-batch drill and a silver repair from bronze. Known limit: silver MERGE throughput
-(ADR-023/028); a trigger-interval experiment is planned for Week 6.
+```mermaid
+flowchart LR
+  sim["Simulator<br/>(orders, payments,<br/>refunds, user moves)"] --> pg[("Postgres 16<br/>wal_level=logical")]
+  pg -- "WAL (pgoutput)" --> dbz["Debezium 2.7<br/>on Kafka Connect"]
+  dbz -- "Avro, keyed by PK" --> kafka[["Kafka (KRaft)<br/>5 topics"]]
+  sr["Schema Registry<br/>BACKWARD"] -.- dbz
+  kafka --> bronze
 
+  subgraph spark["Spark Structured Streaming (one driver) → Delta Lake on MinIO"]
+    bronze[("bronze<br/>raw bytes + schema id<br/>idempotent appends")] --> silver[("silver<br/>decode, dedup by LSN,<br/>MERGE with soft deletes")]
+    silver --> agg["orders per minute<br/>10 min watermark"]
+  end
+
+  sr -.- silver
+  silver -- "bad records" --> q[("quarantine")]
+  agg -- "too late" --> late[("late_events")]
+
+  silver --> dbt["dbt-duckdb build<br/>fact_orders, SCD2 dim_user,<br/>revenue x city"]
+  dbt --> gate{"Soda DQ gate"}
+  gate -- pass --> gold[("gold.duckdb<br/>atomic publish")]
+  gate -- fail --> blocked["keep last good gold<br/>red banner + alert"]
+  gold --> dash["Streamlit dashboard :8501"]
+
+  airflow["Airflow :8088<br/>dq_checks, dbt_run,<br/>optimize, backfill_silver"] -.-> dbt
+  airflow -.-> silver
+  prom["Prometheus + Grafana :3000"] -.-> spark
+  prom -.-> kafka
+  prom -.-> pg
 ```
- Simulator ──► Postgres 16 ──WAL──► Debezium ──► Kafka (KRaft) ──► Spark Structured Streaming
- (Python)      wal_level=logical    (Connect)    + Schema Registry        │
-                                                   (Avro, BACKWARD)       ▼
-                                                              Delta on MinIO: bronze → silver → gold
-                                                                          │            (weeks 2–4)
-                                          dbt-duckdb + Soda gate · Streamlit · Airflow · Prometheus/Grafana
-```
+
+**Status: complete (6 of 6 weeks).** Every claim below links to a decision record in
+[DECISIONS.md](DECISIONS.md) and to a measurement made with a `make` target. Week-by-week
+measurements: [docs/measurements.md](docs/measurements.md). Week 6 benchmarks:
+[bench/results.md](bench/results.md). A 2-minute demo plan: [docs/demo-script.md](docs/demo-script.md).
+
+## Screenshots
+
+| | |
+|---|---|
+| ![dashboard](docs/img/dashboard.png) | ![gold blocked by data quality](docs/img/dashboard-blocked.png) |
+| Live dashboard (revenue/min, refund rate, pipeline health) | A bad batch blocked: last good gold stays up, red banner |
+| ![grafana](docs/img/grafana.png) | ![airflow](docs/img/airflow.png) |
+| Grafana: Kafka lag, Spark batch time, DQ, quarantine, slot lag | Airflow DAGs (red runs = the bad-batch drill) |
+
+*(Placeholders: the files go in [docs/img/](docs/img/README.md).)*
 
 ## Quick start
 
-Needs Docker with about 6 GB RAM, `make` and `curl`.
+You need: Docker Engine + Compose v2, `make`, `git`, `curl`, and **about 8 GB of RAM free for
+Docker** (the full stack used 7.1 GiB under load; the core pipeline alone, without Airflow and
+monitoring, about 6). Tested on WSL2 Ubuntu. First run downloads images and Python/Maven
+packages; with a warm Docker cache it took ‹CLONE_TIME› from `git clone` to a live dashboard.
+
+```bash
+git clone https://github.com/MuskanScripts/cdc-lakehouse.git && cd cdc-lakehouse
+
+make up              # 1. Postgres, Kafka, Schema Registry, Connect + Debezium, MinIO; registers the connector
+make stream-up       # 2. bronze + silver streaming (one Spark driver; first start downloads jars, 1-3 min)
+make gold-up         # 3. dbt build loop (every 30 s, behind the DQ gate) + dashboard
+make simulate RATE=50 DURATION=300   # 4. 5 minutes of orders/payments/refunds (Ctrl+C stops early)
+```
+
+Then open **http://localhost:8501**: revenue and orders per minute start moving within about
+1-2 minutes (CDC → bronze → silver → gold). When the simulator has stopped:
+
+```bash
+make reconcile WAIT=300   # 5. Postgres vs silver, every row and column: expect "RECONCILE PASS: 0 difference"
+make test                 # unit tests (42) in the containers
+```
+
+Optional: `make airflow-up` (http://localhost:8088, admin / admin), `make monitoring-up`
+(Grafana http://localhost:3000, admin / lakehouse). Stop everything with `make down` (keeps data)
+or `make clean` (deletes all volumes).
+
+## Results
+
+All measured on one laptop (WSL2, 9.7 GB RAM, Spark `local[4]`); how each was measured is in
+[docs/measurements.md](docs/measurements.md) and [bench/results.md](bench/results.md).
+
+| What | Result | Proven by |
+|---|---|---|
+| Silver = Postgres after load | **0 missing, 0 extra, 0 mismatched, 0 duplicate keys** on all 5 tables, sums equal to the cent; after every run (200/s for 3 min ×4, every drill, every benchmark) | `make reconcile` |
+| Crash safety | 2 chaos runs × 10 random SIGKILLs of streaming / Connect / Kafka at 100 changes/s: **0 / 0 / 0 / 0**, 0 repeated Kafka offsets in bronze | `make chaos`, `make bronze-check` |
+| Schema drift (ADD COLUMN on a live table) | in silver after **26.6 s** idle, **73.6 s** under 100/s load; no restart | `make drift` |
+| Bad batch (5 negative totals injected in Postgres) | gold **blocked 121 s** after the insert, rows quarantined, alert; republished **66 s** after the source fix | `make bad-batch` / `bad-batch-fix` |
+| Silver repair | 1,305 deleted silver rows restored from bronze (183,110 rows replayed) in **47.5 s** | `make silver-damage` + `make backfill` |
+| End-to-end latency (Postgres commit → silver), 50/s | p50 **36-43 s**, p95 **54-64 s** (two 5-minute runs, 10 s trigger, ~10k rows each) | `make bench-trigger` |
+| Silver trigger 10 s vs 30 s vs 60 s | no gain from 30 s (batches already run back to back, ~29 s each); 60 s worse (p50 48 s, p95 73 s), same 12.5 s per MERGE. **Kept 10 s** | `make bench-trigger`, ADR-034 |
+| Highest rate with flat Kafka lag for 5 min | **about 400 changes/s**; 600/s and 800/s: Kafka lag grows (bronze is CPU-bound in the shared 4-core JVM). Every run reconciled to 0 afterwards | `make bench-rate` |
+| OPTIMIZE / ZORDER | bronze **2,462 → 5 files**, full scan of bronze/orders **1.97 s → 0.06 s (33x)**; silver ZORDER is undone by the next MERGEs within 3 min | `make bench-optimize` |
+| DQ gate cost | 14 Soda checks in 1.1-3.4 s per gold cycle | `make gold-logs` |
+| Memory, whole stack under load | 7.1 of 9.7 GiB (Spark driver 3.56 of 3.9 GiB) | `make stats` |
+| Tests | 42 unit tests (`make test`); CI: unit + DQ tests + `dbt parse` | [.github/workflows/ci.yml](.github/workflows/ci.yml) |
+| Fresh clone → live dashboard | ‹CLONE_TIME›, following only this quick start | Week 6 fresh-clone test |
+
+## Failure modes handled
+
+| Hard problem | What I do | How it is proven | ADR |
+|---|---|---|---|
+| **Duplicates after a crash** (Spark replays a micro-batch) | silver: MERGE only if the change's Postgres LSN is newer; bronze and side tables: idempotent appends (`txnAppId` / `txnVersion`) | `make chaos` twice (10 SIGKILLs each): 0 duplicates, 0 repeated offsets; unit test for a partial multi-table commit | [012](DECISIONS.md#adr-012-soft-deletes-with-an-lsn-guard-in-the-silver-merge), [019](DECISIONS.md#adr-019-idempotent-writes-with-txnappid--txnversion), [021](DECISIONS.md#adr-021-chaos-test-sigkill-the-processing-and-transport-layers-then-reconcile) |
+| **Deletes and replays** (an old insert replayed after a delete would resurrect the row) | soft deletes: a tombstone keeps `_is_deleted` and its LSN | unit tests: insert → update → delete → re-insert, older batch replayed changes nothing; the backfill replayed 183,110 bronze rows over live silver: 0 difference | [012](DECISIONS.md#adr-012-soft-deletes-with-an-lsn-guard-in-the-silver-merge) |
+| **Several changes to one key in one batch, out of order** | dedup inside the batch: highest LSN, then Kafka offset | unit test; reconcile 0 after every run | [012](DECISIONS.md#adr-012-soft-deletes-with-an-lsn-guard-in-the-silver-merge) |
+| **Schema drift** | bronze keeps raw bytes; silver decodes per schema id, the MERGE adds new columns; type changes go to quarantine as `schema_incompatible`; registry in BACKWARD mode | `make drift`: column in silver in 26.6 s / 73.6 s, no restart; registry verdicts checked live; unit test for the type change | [005](DECISIONS.md#adr-005-avro--schema-registry-with-backward-compatibility), [011](DECISIONS.md#adr-011-bronze-stores-raw-bytes-decoding-happens-in-silver), [018](DECISIONS.md#adr-018-schema-drift-decode-per-schema-id-let-the-merge-add-columns-quarantine-type-changes) |
+| **Late events** in an event-time aggregate | 10 min watermark; anything later goes to `late_events`, never silently dropped | `make late-demo` (a 30-min-late order lands in `late_events`); measured disorder max 2.4 s | [020](DECISIONS.md#adr-020-orders-per-minute-with-a-10-minute-watermark-late-events-go-to-a-table) |
+| **Poison messages vs outages** | permanently bad records (bad wire format, undecodable Avro, unknown schema, null key) → quarantine with raw bytes; a registry outage fails the batch and Spark retries | a garbage message injected live → `bad_wire_format`, 0 stream restarts; unit test for null keys | [014](DECISIONS.md#adr-014-quarantine-only-what-is-permanently-bad) |
+| **The source DB filling up** (a stuck replication slot keeps WAL forever) | `max_slot_wal_keep_size=2GB`, Debezium heartbeat, slot lag in `make slot-lag` and Grafana | monitored, not drilled: I did not fill the disk on purpose | [008](DECISIONS.md#adr-008-protect-the-source-db-from-a-stuck-slot) |
+| **Bad data reaching the dashboard** | Soda gate between `dbt build` and publish; correctness blocks, freshness/volume only warn; offending rows to `quarantine/dq`; alert | `make bad-batch`: blocked, quarantined, alerted, gold frozen; recovered after the fix | [029](DECISIONS.md#adr-029-who-does-what-the-30-s-gold-loop-airflow-and-the-dq-gate), [030](DECISIONS.md#adr-030-soda-core-for-data-quality-correctness-blocks-freshness-and-volume-only-warn) |
+| **A half-built or failed gold build** | build into a separate file, publish by atomic rename only when tests + DQ pass; one writer at a time (flock) | a failed build keeps the last good gold with a red banner (checked headless) | [024](DECISIONS.md#adr-024-gold-with-dbt-duckdb-published-as-a-file-swap-served-by-streamlit), [027](DECISIONS.md#adr-027-the-dbt-loop-must-not-run-as-pid-1-and-a-failed-build-must-be-visible) |
+| **History: a user moves city** | SCD Type 2 `dim_user` (dbt snapshot); revenue uses the city at order time | dbt test: exactly one current row per user; orders shown in their old city | [025](DECISIONS.md#adr-025-dim_user-as-a-dbt-snapshot-city-at-order-time) |
+| **Silver damaged** (bug, bad deploy) | `backfill_silver` replays bronze through the stream's own code (`availableNow`) | `make silver-damage` deleted 1,305 rows → `make backfill` → reconcile 0 | [032](DECISIONS.md#adr-032-backfill_silver-replays-bronze-through-the-streams-own-code) |
+| **Orchestrator crash mid-job** (orphaned Spark writers) | one writer job at a time (`exclusive.sh` stops leftovers), the "streaming paused" marker survives a crash | real incident, fixed, then `docker restart airflow` mid-OPTIMIZE: one writer, streaming resumed | [033](DECISIONS.md#adr-033-incident-airflow-restarts-left-orphaned-spark-writers-and-streaming-stopped) |
+
+## All commands
 
 ```bash
 make up                      # build + start everything, register the Debezium connector
@@ -67,15 +158,20 @@ make bench-silver LABEL=x    # silver batch times at 50 changes/s for 3 min → 
 make table-stats             # active files + avg file size per silver table
 make merge-profile           # Delta's own MERGE timings: exec / scan / rewrite, rows copied
 make thread-cpu C=streaming  # per-thread CPU of a JVM container
-make optimize                # stop streaming, OPTIMIZE + VACUUM 168h, start streaming
+make optimize                # stop streaming, OPTIMIZE + VACUUM 168h, start streaming (LAYER=bronze, ZORDER=1)
+
+# Week 6 benchmarks (results in bench/results.md)
+make bench-trigger           # silver trigger 10 vs 30 vs 60 s, same 50/s load (TRIGGERS="10 30 60")
+make bench-rate RATES="100 200 400"   # Kafka + silver lag trend, 5 min per rate (SIM_ARGS=--fast above ~400/s)
+make bench-optimize          # file counts + fixed queries before/after OPTIMIZE (bronze) and ZORDER (silver)
 ```
 
 `make stream-up` is separate from `make up` because the Spark driver is the biggest memory
 consumer (4 GB limit, ~3.5 GiB used once warm). Everything together (stream + gold +
-orchestration + monitoring) used 7.1 GiB of WSL's 9.7 under load (table in "Week 5" below).
-Each Week 5 profile starts on its own: `make airflow-up` or `make monitoring-up`.
+orchestration + monitoring) used 7.1 GiB of WSL's 9.7 under load. Airflow and monitoring each start
+on their own: `make airflow-up`, `make monitoring-up`.
 
-### Data quality and Airflow (Week 5)
+### Data quality and Airflow
 
 Every gold cycle is `dbt build` → **DQ gate** (`quality/checks.yml`, Soda, on the tables just
 built) → atomic publish. The 30 s loop and Airflow's `dbt_run` run the same script and take turns
@@ -156,14 +252,15 @@ simulator/               Faker-based OLTP load generator
 scripts/                 connector registration, Week-1 event check
 spark/                   Delta-on-MinIO smoke test
 streaming/               bronze_ingest.py, silver_merge.py, run_all.py, common/ (decode, MERGE, registry, late_events)
-chaos/                   reconcile.py, latency.py, drift.py, late_demo.py, event_delay.py, bronze_check.py,
+chaos/                   reconcile.py, latency.py, drift.py, bench_sampler.py, merge_window.py, bench_query.py, late_demo.py, event_delay.py, bronze_check.py,
                          kill_random.sh, run_chaos.sh, run_1.log / run_2.log (the recorded chaos runs)
 tests/                   simulator tests + streaming tests (decode, dedup, MERGE, replay, quarantine,
                          schema drift, late events, idempotent writes) + dashboard lag maths
 dbt/                     dbt-duckdb project: staging, users_snapshot (SCD2), fact_orders, dim_user,
                          agg_revenue_minute, agg_refunds_minute, tests; run_loop.sh; image Dockerfile
 dashboard/               Streamlit app.py, health.py (Kafka lag, quarantine), snapshot.py (headless check)
-bench/                   silver_bench.sh, thread_cpu.sh, silver_bench.log
+bench/                   results.md (Week 6), silver_trigger.sh, max_rate.sh, optimize_bench.sh, silver_bench.sh,
+                         thread_cpu.sh, *_results.log (raw benchmark output)
 spark/                   optimize.py (OPTIMIZE [ZORDER] + VACUUM), exclusive.sh (one writer job at a time),
                          damage_silver.py (drill)
 streaming/backfill_silver.py  silver repair/rebuild from bronze, trigger(availableNow=True)
@@ -171,138 +268,16 @@ quality/                 checks.yml (Soda), dq.py (gate + silver scan + quaranti
 dbt/cycle.sh             one gold cycle: build -> DQ gate -> publish (loop + Airflow, flock)
 airflow/                 start.sh, dags/lakehouse_dags.py (4 DAGs), dags/lakehouse_lib.py (docker exec, pause, alert)
 monitoring/              exporter.py, prometheus.yml, grafana/ (provisioned datasource + dashboard)
-DECISIONS.md             architecture decision records
+DECISIONS.md             architecture decision records (my interview script)
+docs/                    measurements.md (week by week), demo-script.md, blog/LinkedIn drafts, img/ (screenshots)
+.github/workflows/ci.yml unit tests + DQ tests + dbt parse, no Docker
 ```
 
-## Measured so far
+## Measured results
 
-| Metric | Result | How |
-|---|---|---|
-| Simulator throughput (source side) | 5,000 changes/s sustained with `--fast`; ~3,950/s without | 10 s run, Postgres 16, single connection |
-| WAL change counts vs simulator counts | exact match on all 5 tables | `test_decoding` slot, 20 s run at 400/s |
-
-| Silver vs Postgres after a 3 min run at 200 changes/s (36,000 changes) | **0 missing, 0 extra, 0 mismatched, 0 duplicate keys** on all 5 tables; `sum(orders.total)` and `sum(payments.amount)` identical to the cent. Silver finished catching up within ~35 s of the simulator stopping | `make reconcile`; repeated 4 times, same result each time |
-| End-to-end latency, Postgres `updated_at` → silver `_silver_ts`, steady 200 changes/s | **p50 24 s, p95 47 s, p99 51 s** (18,868 rows) | `make latency MINUTES=5`, Spark `local[4]`, 7.5 GB WSL, 10 s triggers |
-| Same measurement before tuning | p50 67 s, p95 106 s | first run: tables merged one after another, Delta default `snapshotPartitions=50` |
-| Streaming driver memory | 2.6 GiB of a 2.73 GiB limit, no OOM kills | `docker stats`, `local[4]`, `--driver-memory 1500m` |
-
-How the tuning went (each row is one measured change, same 3-minute workload):
-sequential per-table MERGE 67 s p50 → tables merged in parallel threads 51 s → bronze also
-parallel plus `local[4]` 31 s → `spark.databricks.delta.snapshotPartitions=2` 24 s.
-
-Latency caveat: silver keeps only the latest version of each key, so every row is measured on
-its last change, and the figure includes up to one bronze trigger plus one silver trigger of
-queueing (10 s each). At 200 changes/s silver batches take 10–12 s, which is right at the
-trigger interval, so this is close to this machine's ceiling and not a comfortable margin.
-Post-crash correctness is Week 3, below.
-
-### Week 3
-
-| What | Result | How |
-|---|---|---|
-| **Chaos, run 1**: 10 random SIGKILLs (connect x5, streaming x4, kafka x1) at 100 changes/s | **0 missing, 0 extra, 0 mismatched, 0 duplicate keys** on all 5 tables (31,737 orders; `sum(total)` and `sum(amount)` equal to the cent); 0 repeated Kafka offsets in bronze | `make chaos`, log in `chaos/run_1.log` |
-| **Chaos, run 2**: 10 SIGKILLs, Kafka-weighted (kafka x8, streaming x2) | same: **0 / 0 / 0 / 0** on all 5 tables (40,104 orders), 0 repeated bronze offsets | `TARGETS="kafka kafka connect streaming" make chaos`, `chaos/run_2.log` |
-| Connector task failures needing a restart during chaos | 0 in both runs | watchdog in `kill_random.sh` |
-| Schema drift, idle system | Debezium registered the new schema 2.8 s after `ALTER`; column in silver at **26.6 s** | `make drift TBL=products COL=note`, nothing else running |
-| Schema drift, simulator at 100 changes/s | new schema version at 1.8 s; column in silver at **73.6 s** (silver batches were taking 37-72 s, so this is mostly queueing) | `make drift` during `make simulate RATE=100` |
-| Schema registry verdict (BACKWARD) | adding an optional column: compatible; `qty` int to string: **not** compatible | printed by `make drift` against the live registry |
-| Late event path | order created 30 min ago: in `late_events`, not in `events/orders_created`, `orders_per_minute` for its minute unchanged | `make late-demo` |
-| Aggregate vs events | sum of `orders_per_minute` = 9,920 = rows in `events/orders_created` = 9,920 distinct order ids | after chaos run 1 |
-| Order event delay (bronze `ingest_ts` - `created_at`), no faults, 50 changes/s | p50 7.1 s, p99 22.6 s, max 24.5 s (1,548 orders) | `make late-stats`, 4 min window |
-| Same, no faults, 100 changes/s | p50 12.0 s, p99 30.2 s, max 31.6 s (2,780 orders) | window before chaos run 1 |
-| Same, during chaos at 100 changes/s | p50 220-235 s, **p99 446-452 s, max 451-457 s** (7,139 and 6,955 orders) | the pipeline is overloaded at 100/s on top of the kills; windows are the chaos periods only |
-| Out-of-order arrival ("disorder": how far behind the newest processed event a new one is) | max **0.0 s** (100/s, no kills), **2.1 s** (50/s, no kills), **0.8 s** and **2.4 s** (chaos runs 1 and 2) | `make late-stats` |
-| Events later than the 10 min watermark | 0 real ones in any run (the only one is the injected demo order) | `make late-stats` |
-
-Why a 10 minute watermark, in one line: the real disorder was at most 2.4 s (in all four windows) and the worst
-processing delay under chaos was 7.6 min, so 10 minutes covers both with margin; if delay ever
-exceeded it the event is routed to `late_events`, not lost (ADR-020).
-
-Caveats I want to be upfront about:
-- **Throughput regressed against Week 2 and I don't know why.** Silver batches take 19-26 s at
-  50 changes/s and 20-70 s at 100/s; Week 2 recorded 10-12 s at 200/s. Batches that ran on the
-  Week 2 code earlier in this session were already 20-43 s, so it is not simply the new code.
-  My guess (not verified) is silver table growth with many small files and no `OPTIMIZE` yet.
-  The new event side output makes the orders thread about 2.6 s slower per batch (ADR-020).
-  So the Week 2 latency row above (p50 24 s at 200/s) was NOT reproduced today.
-- Streaming driver memory: 2.59 GiB of the 2.73 GiB limit after the drift run (`docker stats`),
-  now with three queries in the JVM. No OOM kill seen, but there is almost no headroom.
-- 10 kills per run is a smoke test. Postgres and MinIO were not killed. I have no proof that a
-  kill landed between two bronze commits; the idempotent write is proven by a unit test (ADR-019).
-- The breaking-type-change quarantine (`schema_incompatible`) is covered by unit tests, not by a
-  live drill: I did not break the live connector.
-
-### Week 4
-
-| What | Result | How |
-|---|---|---|
-| dbt build | **PASS=29, ERROR=0** (1 snapshot, 9 models, 19 tests) in ~5-30 s | `make dbt-build`; the loop logs every build in `make gold-logs` |
-| dbt tests alone | **PASS=19, ERROR=0**: unique, not_null, relationships, accepted_values on order/payment status and tier, exactly one `is_current` per existing user, every order counted once in the SCD join, no order older than 5 min without a city | `make dbt-test` |
-| Dashboard updates while the simulator runs | two headless renders 70 s apart at 50 changes/s: net revenue (60 min) ₹171.7M → ₹200.0M, orders 7,364 → 8,105, gold built 33 s / 21 s ago | `docker compose exec dashboard python /app/snapshot.py` (Streamlit AppTest, fails on any page exception) |
-| Refund rate | 11.8-11.9% (simulator design: 4 refunds per 32 orders = 12.5%) | same |
-| SCD2 | 256 users with history (max 3 versions); orders shown in their city at order time, e.g. order 46741 Patiala then, Ahmedabad now | query on `dim_user` / `fact_orders` |
-| Reconcile after all of it | 0 / 0 / 0 / 0 on all 5 tables (48,641 orders) | `make reconcile` |
-| Gold freshness after the ADR-027 fix | 9 consecutive builds OK during a 300 s run at 50/s; "Gold built" 6-30 s over 11 renders; red banner verified for a failed build and for gold > 2 min old | `make simulate RATE=50 DURATION=300` + `snapshot.py` |
-| Memory, whole stack incl. gold, simulator on | streaming 3.51 of 3.9 GiB, connect 1.49 GiB, minio 0.60, kafka 0.63, schema-registry 0.35, dbt 0.11-0.27 of 1 GiB, dashboard 0.04-0.06 of 0.5 GiB; WSL 7.1 GiB used, 2.6 available | `docker stats` |
-
-**Silver performance, investigated (ADR-023).** The Week 3 guess (small files) was wrong:
-
-| | before OPTIMIZE | after OPTIMIZE |
-|---|---|---|
-| active files per silver table | 4-9, avg 20-495 KiB | 1, avg 67-1,964 KiB |
-| silver batch median at 50/s, 3 min | 46.7 s (cold JVM, 3 batches) | 30.5 s (warm, 5 batches) |
-| Delta MERGE `executionTimeMs`, median | 9.3 s | 11.6 s |
-
-OPTIMIZE did not help: the next MERGE turned 1 file back into 4, and Delta's own MERGE timer did
-not improve. The batch-time difference comes from JIT warm-up after the driver restart. The real
-cause: **every MERGE rewrites the whole table**. For example, an orders MERGE with 315 changed rows
-copied all 43,432 unchanged ones, so about 1.7k changes per batch cost about 170k rows written.
-Inside a 10.4 s MERGE: 5.4 s scan, 3.7 s rewrite. The JVM used about 4.7 cores at 50/s (JIT 0.6, GC 0.8).
-VACUUM RETAIN 168 HOURS deleted nothing (all replaced files are under 7 days old). Fix options
-are in ADR-023; none is applied yet.
-
-### Week 5
-
-**Bad-batch drill** (`make bad-batch` with the simulator at 50 changes/s; log of one run, UTC):
-
-| time | what happened |
-|---|---|
-| 19:08:26 | 5 orders with negative totals committed in Postgres (62053-62057, CHECK dropped by the drill) |
-| 19:10:13 | Airflow `dq_checks` (scheduled) on silver: `DQ FAIL \| blocking: orders_total_non_negative=5`, **5 rows written to `quarantine/dq`** with their LSNs, alert logged |
-| 19:10:21 | gold loop: `build OK ... but gold NOT published \| DQ FAIL \| blocking: orders_total_non_negative=5` (**121 s** after the insert: CDC + silver latency + one cycle) |
-| 19:10:39 | Airflow `dbt_run` blocked the same way, task FAILED, alert logged |
-| 19:11:04 | dashboard: red banner "Gold publish BLOCKED by data quality ... orders_total_non_negative=5 ... last GOOD build"; DQ gate tile FAIL |
-| 19:13:50 | gold still the 19:09:46 build: 60,066 orders, 0 negative totals, while Postgres grew to 62,286. Prometheus: `last_cycle_status=1`, `dq_gate_status=2`, published age 226 s |
-| 19:13:50 | `make bad-batch-fix`: totals corrected at the source, CHECK constraint restored |
-| 19:14:55 | first OK cycle, **66 s** after the fix: published, 62,317 orders, 0 negative; banner gone; Prometheus back to 0/0 |
-| 19:15:19 | Airflow `dq_checks` green again; a rerun while blocked reported "quarantined 0 new of 5" (no duplicates) |
-
-| What | Result | How |
-|---|---|---|
-| DQ gate cost | 14 checks in 1.1-3.4 s per cycle; cycles 14-45 s | `make gold-logs` |
-| DQ on silver (Airflow) | 2.5-12.6 s | `dq_checks` task log |
-| Backfill repair | `make silver-damage N=50` deleted 1,305 silver rows → reconcile: 1,249 orders missing, ₹107.7M short. `backfill_silver` (Airflow, orders, 2026-11-01..23): 183,110 bronze rows in 1 batch, 47.5 s, silver +1,305 rows → **reconcile 0 / 0 / 0 / 0** on all 5 tables. Streaming paused 79 s | `make backfill TABLE=orders` |
-| Nightly optimize DAG | streaming paused 10 min 15 s; OPTIMIZE ZORDER 2.5-12 s per table (orders 5 files → 1, order_items 18 → 1), VACUUM 53-127 s per table, deleted 0 (all files < 7 days) | `make optimize-dag` |
-| Airflow restart during optimize (after the ADR-033 fix) | retry stopped the orphaned Spark job, one writer, streaming resumed, task SUCCESS | `docker restart airflow` mid-job |
-| Reconcile after everything | 0 / 0 / 0 / 0 on all 5 tables (64,874 orders) | `make reconcile` |
-| Streaming metrics (Prometheus) at 50/s | batch duration bronze 11.7 s, silver 28.0 s, orders_per_minute 8.5 s; silver 60 rows/s processed | listener on :9109 |
-| `make test` | **42 passed** (30 in the spark container, 12 DQ tests in the Soda venv) | `make test` |
-
-**Memory, whole stack under load** (simulator 50/s, streaming + gold + Airflow + monitoring,
-kafka-ui off): WSL **7.1 GiB used of 9.7, 2.6 available**, swap 1.3 GiB. streaming 3.56 / 3.9 GiB,
-airflow 0.87 / 1.47 GiB, connect 0.80, minio 0.60, kafka 0.53, schema-registry 0.24, dbt 0.19 / 1,
-postgres 0.15, pipeline-exporter 0.11 / 0.25, grafana 0.07 / 0.3, prometheus 0.04 / 0.3, dashboard 0.05,
-spark (idle client) 0.19 (`make stats`). During optimize/backfill the spark container runs a
-1.5 GB-heap JVM, but streaming is stopped then. The streaming driver's margin is still only about
-0.35 GiB.
-
-What I'd call out honestly:
-- Airflow's first start ran a missed nightly `optimize` immediately and exposed a real bug
-  chain (orphaned Spark writers, streaming left stopped). Silver was not damaged (reconcile 0), but
-  it was luck that the job was OPTIMIZE. Fixed and re-tested; see ADR-033.
-- Airflow masks the string "airflow" in task logs (it is the metadata DB password), so the
-  trigger label shows as `[***]`. Cosmetic.
-- Slack delivery is untested: no webhook was configured, so alerts went to the log path only.
+The summary is under [Results](#results). Details: week by week in
+[docs/measurements.md](docs/measurements.md), Week 6 benchmarks in [bench/results.md](bench/results.md),
+reasoning in [DECISIONS.md](DECISIONS.md).
 
 ## Troubleshooting
 

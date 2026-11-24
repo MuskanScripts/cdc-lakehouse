@@ -28,7 +28,18 @@ events.
   and `list[str]` hints in anything that runs there.
 - Corporate laptop: if a download is blocked, stop and tell Rohit. Don't silently switch tools.
 
-## Current state (Weeks 1-5 DONE)
+## Current state (Weeks 1-6 DONE: project complete)
+**Week 6 (done):** benchmarks in `bench/results.md` (all measured, raw logs `bench/*_results.log`).
+Silver trigger 10 vs 30 vs 60 s (`make bench-trigger`, `SILVER_TRIGGER_INTERVAL`, ADR-034): no gain,
+**kept 10 s** (batches ~29 s run back to back; MERGE ~12.5 s fixed; 60 s worse latency). Max sustainable
+rate (`make bench-rate`): **~400/s**; above that bronze falls behind (one 4-core JVM is CPU-bound), and
+the ceiling falls as silver grows (ADR-023). OPTIMIZE (`make bench-optimize`): bronze 2,462 → 5 files,
+full scan 1.97 → 0.06 s; silver ZORDER undone by MERGEs within 3 min. The nightly optimize DAG now
+also compacts bronze (pause ~15 min, mostly VACUUM). README final (Mermaid, failure modes, results,
+quick start), week-by-week numbers moved to `docs/measurements.md`; CI in `.github/workflows/ci.yml`
+(unit + DQ tests + dbt parse); `docs/demo-script.md`, blog/LinkedIn drafts; screenshots go in
+`docs/img/`. Makefile: `BENCH_RATE` because the global `RATE ?= 200` used to override per-target
+defaults (`make chaos` too). The laptop can sleep mid-run: check `date -u` against the logs.
 **Week 5 (done):** gold cycle = `dbt/cycle.sh` (build → Soda DQ gate → publish, flock), run by the
 30 s loop and by Airflow `dbt_run` (ADR-029). Soda lives in venv `/opt/soda` in the gold image
 (ADR-030); freshness/volume only warn. Airflow (`make airflow-up`, :8088 admin/admin, profile

@@ -5,7 +5,7 @@
   dbt_run         every 5 min     the SAME cycle (cycle.sh, flock'd with the loop) so every gold
                                   build has an auditable run, a task status and an alert on failure.
   dq_checks       every 5 min     the DQ suite on SILVER: quarantines bad records, alerts.
-  optimize        nightly 02:00   streaming paused -> OPTIMIZE ZORDER + VACUUM 7 days -> resumed.
+  optimize        nightly 02:00   streaming paused -> silver OPTIMIZE ZORDER + VACUUM 7 days, bronze OPTIMIZE + VACUUM -> resumed.
   backfill_silver manual, params  streaming paused -> rebuild a silver table from bronze -> resumed.
 
 The rule "gold is published only if DQ passes" is enforced inside cycle.sh, so it holds for the
@@ -79,14 +79,18 @@ def run_optimize(run_id, dag_run, data_interval_end, **_):
     if dag_run.run_type == "scheduled" and late > dt.timedelta(hours=2):
         raise AirflowSkipException(f"nightly slot {data_interval_end} missed by {late}; next one tonight")
     with lib.streaming_paused(f"optimize {run_id}"):
-        return lib.spark_job("/opt/project/spark/optimize.py", "silver", "--zorder")
+        out = lib.spark_job("/opt/project/spark/optimize.py", "silver", "--zorder")
+        # Bronze is where small files pile up (one append per table per 10 s trigger). Compaction only:
+        # it has no business key to ZORDER by. Measured 2,462 files -> 5, full scan 1.97 s -> 0.06 s
+        # (bench/results.md). The silver stream skips these commits (dataChange=false).
+        return out + lib.spark_job("/opt/project/spark/optimize.py", "bronze")
 
 
 with DAG("optimize", schedule="0 2 * * *", start_date=START, catchup=False, max_active_runs=1,
          default_args={**DEFAULTS, "on_failure_callback": lib.on_writer_failure, "retries": 1,
                        "retry_delay": dt.timedelta(minutes=5)}, tags=["maintenance"],
          doc_md="Pause streaming, OPTIMIZE ZORDER BY key + VACUUM RETAIN 168 HOURS on every silver table, "
-                "resume streaming (always). Gold is a DuckDB file rebuilt every cycle: nothing to compact.") as opt_dag:
+                "then OPTIMIZE + VACUUM on every bronze table (Week 6), resume streaming (always). Gold is a DuckDB file rebuilt every cycle: nothing to compact.") as opt_dag:
     PythonOperator(task_id="optimize_vacuum_silver", python_callable=run_optimize, pool="streaming_writer",
                    execution_timeout=dt.timedelta(minutes=30))
 

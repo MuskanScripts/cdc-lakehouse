@@ -1,0 +1,100 @@
+=================== OPTIMIZE bench   2026-11-24T02:23:27Z
+-- bronze (before)
+table        version  active files      rows      MiB  avg KiB/file
+users            490           490     17774     4.20           8.8
+products         492           492     11023     2.85           5.9
+orders           496           496    228688    27.87          57.5
+order_items      492           492    156523    13.17          27.4
+payments         492           492    172258    19.87          41.4
+TOTAL                         2462              67.97          28.3
+-- silver (before)
+table        version  active files      rows      MiB  avg KiB/file
+users            224             5      6115     0.42          85.7
+products         225             8      2789     0.14          18.1
+orders           229             4     81754     3.69         945.2
+order_items      226            10    143110     3.04         310.9
+payments         224             4     81747     3.11         796.4
+TOTAL                           31              10.40         343.5
+Q1 before: bronze/orders full scan  rows=228688 distinct_offsets=228688 files=496  median=1.97s best=1.82s (5 runs)
+Q2 before: silver/orders order_id in [80755,81755)  rows=1000 files=4 files_overlapping_range=4  median=0.08s best=0.07s (5 runs)
+ Container streaming Stopping 
+ Container streaming Stopped 
+ Container minio Running 
+ Container spark Running 
+-- OPTIMIZE bronze --no-vacuum
+Ivy Default Cache set to: /root/.ivy2/cache
+The jars for the packages stored in: /root/.ivy2/jars
+io.delta#delta-spark_2.12 added as a dependency
+org.apache.hadoop#hadoop-aws added as a dependency
+	com.amazonaws#aws-java-sdk-bundle;1.12.262 from central in [default]
+	io.delta#delta-spark_2.12;3.2.1 from central in [default]
+	io.delta#delta-storage;3.2.1 from central in [default]
+	org.antlr#antlr4-runtime;4.9.3 from central in [default]
+	org.apache.hadoop#hadoop-aws;3.3.4 from central in [default]
+	org.wildfly.openssl#wildfly-openssl;1.0.7.Final from central in [default]
+table        files before  after  avg KiB before   after  optimize s  vacuum s
+users                 490      1             8.8  2650.2        18.5       0.0
+products              492      1             5.9  1364.1        11.8       0.0
+orders                496      1            57.5 26883.8        13.3       0.0
+order_items           492      1            27.4 12246.8        11.4       0.0
+payments              492      1            41.4 18897.3         9.5       0.0
+-- OPTIMIZE silver --no-vacuum --zorder
+Ivy Default Cache set to: /root/.ivy2/cache
+The jars for the packages stored in: /root/.ivy2/jars
+io.delta#delta-spark_2.12 added as a dependency
+org.apache.hadoop#hadoop-aws added as a dependency
+	com.amazonaws#aws-java-sdk-bundle;1.12.262 from central in [default]
+	io.delta#delta-spark_2.12;3.2.1 from central in [default]
+	io.delta#delta-storage;3.2.1 from central in [default]
+	org.antlr#antlr4-runtime;4.9.3 from central in [default]
+	org.apache.hadoop#hadoop-aws;3.3.4 from central in [default]
+	org.wildfly.openssl#wildfly-openssl;1.0.7.Final from central in [default]
+table        files before  after  avg KiB before   after  optimize s  vacuum s
+users                   5      1            85.7   409.4         5.8       0.0
+products                8      1            18.1   113.7         2.7       0.0
+orders                  4      1           945.2  3757.6         5.8       0.0
+order_items            10      1           310.9  2731.0         3.1       0.0
+payments                4      1           796.4  3191.9         2.9       0.0
+-- bronze (after-optimize)
+table        version  active files      rows      MiB  avg KiB/file
+users            491             1     17774     2.59        2650.2
+products         493             1     11023     1.33        1364.1
+orders           497             1    228688    26.25       26883.8
+order_items      493             1    156523    11.96       12246.8
+payments         493             1    172258    18.45       18897.3
+TOTAL                            5              60.59       12408.4
+-- silver (after-optimize)
+table        version  active files      rows      MiB  avg KiB/file
+users            225             1      6115     0.40         409.4
+products         226             1      2789     0.11         113.7
+orders           230             1     81754     3.67        3757.6
+order_items      227             1    143110     2.67        2731.0
+payments         225             1     81747     3.12        3191.9
+TOTAL                            5               9.96        2040.7
+Q1 after-optimize: bronze/orders full scan  rows=228688 distinct_offsets=228688 files=1  median=0.06s best=0.05s (5 runs)
+Q2 after-optimize: silver/orders order_id in [80755,81755)  rows=1000 files=1 files_overlapping_range=1  median=0.05s best=0.04s (5 runs)
+ Container minio Running 
+ Container kafka Running 
+ Container schema-registry Running 
+ Container kafka Waiting 
+ Container kafka Healthy 
+ Container kafka Waiting 
+ Container schema-registry Waiting 
+ Container kafka Healthy 
+ Container schema-registry Healthy 
+ Container streaming Starting 
+ Container streaming Started 
+-- decay: simulator 50/s for 180s with streaming running   2026-11-24T02:27:07Z
+stopped after 180.0s, 9000 row changes (50.0/s)
+RECONCILE PASS: 0 difference on all tables
+-- silver (after 180s of MERGEs)
+table        version  active files      rows      MiB  avg KiB/file
+users            231             4      6200     0.42         107.8
+products         232             4      2820     0.13          33.7
+orders           236             4     83011     3.75         959.9
+order_items      233             5    145303     3.07         628.8
+payments         231             4     83004     3.16         809.0
+TOTAL                           21              10.53         513.6
+Q1 after-180s-of-merges: bronze/orders full scan  rows=232227 distinct_offsets=232227 files=14  median=0.11s best=0.09s (5 runs)
+Q2 after-180s-of-merges: silver/orders order_id in [80755,81755)  rows=1000 files=4 files_overlapping_range=4  median=0.08s best=0.06s (5 runs)
+=================== done   2026-11-24T02:31:50Z

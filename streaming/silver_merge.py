@@ -18,7 +18,8 @@ from streaming.common.tables import BRONZE, CHECKPOINTS, QUARANTINE, SILVER, TAB
 from streaming.common.transforms import process_batch
 
 MAX_FILES = int(os.environ.get("MAX_FILES_PER_TRIGGER", "20"))
-TRIGGER = os.environ.get("TRIGGER_INTERVAL", "10 seconds")
+# SILVER_TRIGGER_INTERVAL overrides the shared TRIGGER_INTERVAL for silver only (ADR-034).
+TRIGGER = os.environ.get("SILVER_TRIGGER_INTERVAL") or os.environ.get("TRIGGER_INTERVAL", "10 seconds")
 
 
 def start_silver(spark):

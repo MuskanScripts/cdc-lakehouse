@@ -1,0 +1,156 @@
+=================== rate 100/s for 300s   2026-11-24T02:34:12Z
+  rate-100 simulator: stopped after 300.0s, 30000 row changes (100.0/s)
+LAG rate-100: kafka_lag: first=0 median=2054 max=3263 last=1438 slope/min=+109.3 third1_med=1687 third3_med=1415 | silver_lag_s: first=243.9 median=51.5 max=258.9 last=40.4 slope/min=-18.8 third1_med=45.4 third3_med=54.5
+      t=    0s kafka_lag=0 silver_lag_s=243.9
+      t=   15s kafka_lag=973 silver_lag_s=258.9
+      t=   30s kafka_lag=1454 silver_lag_s=25.2
+      t=   45s kafka_lag=1920 silver_lag_s=40.5
+      t=   60s kafka_lag=2208 silver_lag_s=35.2
+      t=   75s kafka_lag=2187 silver_lag_s=50.3
+      t=   90s kafka_lag=2810 silver_lag_s=37.6
+      t=  105s kafka_lag=2446 silver_lag_s=52.7
+      t=  120s kafka_lag=2553 silver_lag_s=67.4
+      t=  135s kafka_lag=1344 silver_lag_s=55.6
+      t=  150s kafka_lag=2872 silver_lag_s=71.1
+      t=  165s kafka_lag=3263 silver_lag_s=44.5
+      t=  180s kafka_lag=1435 silver_lag_s=59.2
+      t=  195s kafka_lag=2877 silver_lag_s=45.6
+      t=  210s kafka_lag=1283 silver_lag_s=60.3
+      t=  225s kafka_lag=2828 silver_lag_s=48.0
+      t=  240s kafka_lag=1392 silver_lag_s=63.0
+      t=  255s kafka_lag=973 silver_lag_s=48.7
+      t=  270s kafka_lag=2464 silver_lag_s=63.8
+      t=  285s kafka_lag=1438 silver_lag_s=40.4
+    LAG rate-100: kafka_lag: first=0 median=2054 max=3263 last=1438 slope/min=+109.3 third1_med=1687 third3_med=1415 | silver_lag_s: first=243.9 median=51.5 max=258.9 last=40.4 slope/min=-18.8 third1_med=45.4 third3_med=54.5
+  rate-100 RECONCILE PASS: 0 difference on all tables
+  rate-100 silver caught up 58 s after the simulator stopped
+=================== rate 200/s for 300s   2026-11-24T02:40:13Z
+  rate-200 simulator: stopped after 300.1s, 59983 row changes (199.9/s)
+LAG rate-200: kafka_lag: first=0 median=3250 max=5951 last=1550 slope/min=+239.1 third1_med=2737 third3_med=2976 | silver_lag_s: first=62.0 median=53.3 max=77.1 last=61.7 slope/min=+0.1 third1_med=47.9 third3_med=50.7
+      t=    0s kafka_lag=0 silver_lag_s=62.0
+      t=   15s kafka_lag=2257 silver_lag_s=77.1
+      t=   30s kafka_lag=3291 silver_lag_s=27.0
+      t=   45s kafka_lag=2265 silver_lag_s=42.1
+      t=   60s kafka_lag=3209 silver_lag_s=37.5
+      t=   75s kafka_lag=3862 silver_lag_s=53.6
+      t=   90s kafka_lag=4186 silver_lag_s=47.5
+      t=  105s kafka_lag=3417 silver_lag_s=62.0
+      t=  120s kafka_lag=4147 silver_lag_s=53.0
+      t=  135s kafka_lag=4812 silver_lag_s=68.0
+      t=  150s kafka_lag=4996 silver_lag_s=39.7
+      t=  165s kafka_lag=2483 silver_lag_s=54.6
+      t=  180s kafka_lag=3096 silver_lag_s=44.8
+      t=  195s kafka_lag=3522 silver_lag_s=59.9
+      t=  210s kafka_lag=4952 silver_lag_s=46.4
+      t=  225s kafka_lag=2828 silver_lag_s=61.5
+      t=  240s kafka_lag=5951 silver_lag_s=39.5
+      t=  255s kafka_lag=2813 silver_lag_s=54.6
+      t=  270s kafka_lag=3124 silver_lag_s=46.7
+      t=  285s kafka_lag=1550 silver_lag_s=61.7
+    LAG rate-200: kafka_lag: first=0 median=3250 max=5951 last=1550 slope/min=+239.1 third1_med=2737 third3_med=2976 | silver_lag_s: first=62.0 median=53.3 max=77.1 last=61.7 slope/min=+0.1 third1_med=47.9 third3_med=50.7
+  rate-200 RECONCILE PASS: 0 difference on all tables
+  rate-200 silver caught up 69 s after the simulator stopped
+=================== rate 400/s for 300s   2026-11-24T02:46:30Z
+  rate-400 simulator: stopped after 300.0s, 115145 row changes (383.8/s)
+LAG rate-400: kafka_lag: first=0 median=6894 max=10523 last=5559 slope/min=+690.6 third1_med=6236 third3_med=6304 | silver_lag_s: first=76.7 median=52.4 max=106.7 last=49.4 slope/min=-7.6 third1_med=65.5 third3_med=46.8
+      t=    0s kafka_lag=0 silver_lag_s=76.7
+      t=   15s kafka_lag=3083 silver_lag_s=91.7
+      t=   30s kafka_lag=5690 silver_lag_s=106.7
+      t=   45s kafka_lag=6781 silver_lag_s=39.6
+      t=   60s kafka_lag=7731 silver_lag_s=54.3
+      t=   75s kafka_lag=7359 silver_lag_s=49.2
+      t=   90s kafka_lag=7873 silver_lag_s=64.0
+      t=  105s kafka_lag=3724 silver_lag_s=49.9
+      t=  120s kafka_lag=7008 silver_lag_s=64.9
+      t=  135s kafka_lag=8662 silver_lag_s=53.7
+      t=  150s kafka_lag=7216 silver_lag_s=36.9
+      t=  165s kafka_lag=3879 silver_lag_s=51.7
+      t=  180s kafka_lag=9906 silver_lag_s=39.5
+      t=  195s kafka_lag=5361 silver_lag_s=54.5
+      t=  210s kafka_lag=7049 silver_lag_s=69.6
+      t=  225s kafka_lag=3090 silver_lag_s=44.2
+      t=  240s kafka_lag=5332 silver_lag_s=23.1
+      t=  255s kafka_lag=10205 silver_lag_s=38.2
+      t=  270s kafka_lag=10523 silver_lag_s=53.1
+      t=  285s kafka_lag=5559 silver_lag_s=49.4
+    LAG rate-400: kafka_lag: first=0 median=6894 max=10523 last=5559 slope/min=+690.6 third1_med=6236 third3_med=6304 | silver_lag_s: first=76.7 median=52.4 max=106.7 last=49.4 slope/min=-7.6 third1_med=65.5 third3_med=46.8
+  rate-400 RECONCILE PASS: 0 difference on all tables
+  rate-400 silver caught up 100 s after the simulator stopped
+=================== rate 800/s for 300s   2026-11-24T02:55:26Z
+  rate-800 simulator: stopped after 300.0s, 240000 row changes (800.0/s)
+LAG rate-800: kafka_lag: first=0 median=22090 max=40447 last=33419 slope/min=+4479.5 third1_med=11314 third3_med=28866 | silver_lag_s: first=236.7 median=85.1 max=265.7 last=127.5 slope/min=-15.4 third1_med=143.2 third3_med=104.9
+      t=    0s kafka_lag=0 silver_lag_s=236.7
+      t=   15s kafka_lag=11159 silver_lag_s=250.6
+      t=   30s kafka_lag=6827 silver_lag_s=265.7
+      t=   45s kafka_lag=11468 silver_lag_s=34.6
+      t=   60s kafka_lag=13564 silver_lag_s=49.7
+      t=   75s kafka_lag=25435 silver_lag_s=45.4
+      t=   90s kafka_lag=29421 silver_lag_s=60.6
+      t=  105s kafka_lag=21205 silver_lag_s=75.4
+      t=  120s kafka_lag=33322 silver_lag_s=68.0
+      t=  135s kafka_lag=10405 silver_lag_s=83.0
+      t=  150s kafka_lag=22395 silver_lag_s=98.1
+      t=  165s kafka_lag=24751 silver_lag_s=72.1
+      t=  180s kafka_lag=16847 silver_lag_s=87.3
+      t=  195s kafka_lag=26440 silver_lag_s=103.3
+      t=  210s kafka_lag=40447 silver_lag_s=117.3
+      t=  225s kafka_lag=39122 silver_lag_s=67.2
+      t=  240s kafka_lag=24314 silver_lag_s=82.3
+      t=  255s kafka_lag=16628 silver_lag_s=97.4
+      t=  270s kafka_lag=21786 silver_lag_s=112.3
+      t=  285s kafka_lag=33419 silver_lag_s=127.5
+    LAG rate-800: kafka_lag: first=0 median=22090 max=40447 last=33419 slope/min=+4479.5 third1_med=11314 third3_med=28866 | silver_lag_s: first=236.7 median=85.1 max=265.7 last=127.5 slope/min=-15.4 third1_med=143.2 third3_med=104.9
+  rate-800 RECONCILE PASS: 0 difference on all tables
+  rate-800 silver caught up 122 s after the simulator stopped
+=================== rate 600/s for 300s   2026-11-24T03:03:16Z
+  rate-600 simulator: stopped after 300.0s, 179988 row changes (600.0/s)
+LAG rate-600: kafka_lag: first=0 median=18274 max=34085 last=28580 slope/min=+2638.3 third1_med=12510 third3_med=19379 | silver_lag_s: first=170.7 median=91.8 max=200.8 last=78.6 slope/min=-10.2 third1_med=118.3 third3_med=85.9
+      t=    0s kafka_lag=0 silver_lag_s=170.7
+      t=   15s kafka_lag=8598 silver_lag_s=185.9
+      t=   30s kafka_lag=11796 silver_lag_s=200.8
+      t=   45s kafka_lag=13225 silver_lag_s=37.5
+      t=   60s kafka_lag=17029 silver_lag_s=51.3
+      t=   75s kafka_lag=24949 silver_lag_s=65.8
+      t=   90s kafka_lag=34085 silver_lag_s=81.3
+      t=  105s kafka_lag=24811 silver_lag_s=95.9
+      t=  120s kafka_lag=17648 silver_lag_s=88.1
+      t=  135s kafka_lag=12422 silver_lag_s=103.1
+      t=  150s kafka_lag=21682 silver_lag_s=118.0
+      t=  165s kafka_lag=18901 silver_lag_s=76.1
+      t=  180s kafka_lag=28248 silver_lag_s=90.5
+      t=  195s kafka_lag=24802 silver_lag_s=105.6
+      t=  210s kafka_lag=16924 silver_lag_s=77.8
+      t=  225s kafka_lag=9999 silver_lag_s=93.2
+      t=  240s kafka_lag=12227 silver_lag_s=108.6
+      t=  255s kafka_lag=21834 silver_lag_s=123.0
+      t=  270s kafka_lag=31012 silver_lag_s=62.8
+      t=  285s kafka_lag=28580 silver_lag_s=78.6
+    LAG rate-600: kafka_lag: first=0 median=18274 max=34085 last=28580 slope/min=+2638.3 third1_med=12510 third3_med=19379 | silver_lag_s: first=170.7 median=91.8 max=200.8 last=78.6 slope/min=-10.2 third1_med=118.3 third3_med=85.9
+  rate-600 RECONCILE PASS: 0 difference on all tables
+  rate-600 silver caught up 197 s after the simulator stopped
+=================== rate 400/s for 300s   2026-11-24T03:11:52Z
+  rate-400 simulator: stopped after 300.0s, 120001 row changes (400.0/s)
+LAG rate-400: kafka_lag: first=0 median=12334 max=23937 last=10470 slope/min=+1094.0 third1_med=9073 third3_med=11505 | silver_lag_s: first=216.3 median=93.0 max=262.7 last=74.8 slope/min=-28.1 third1_med=224.5 third3_med=76.3
+      t=    0s kafka_lag=0 silver_lag_s=216.3
+      t=   15s kafka_lag=4826 silver_lag_s=232.7
+      t=   30s kafka_lag=6071 silver_lag_s=247.0
+      t=   45s kafka_lag=12075 silver_lag_s=262.7
+      t=   60s kafka_lag=18174 silver_lag_s=57.5
+      t=   75s kafka_lag=18548 silver_lag_s=72.6
+      t=   90s kafka_lag=10988 silver_lag_s=87.3
+      t=  105s kafka_lag=11218 silver_lag_s=78.1
+      t=  120s kafka_lag=17147 silver_lag_s=92.6
+      t=  135s kafka_lag=12394 silver_lag_s=108.0
+      t=  150s kafka_lag=18495 silver_lag_s=122.9
+      t=  165s kafka_lag=17843 silver_lag_s=91.0
+      t=  180s kafka_lag=23937 silver_lag_s=105.9
+      t=  195s kafka_lag=12754 silver_lag_s=119.4
+      t=  210s kafka_lag=18944 silver_lag_s=134.7
+      t=  225s kafka_lag=16025 silver_lag_s=62.9
+      t=  240s kafka_lag=4705 silver_lag_s=77.8
+      t=  255s kafka_lag=10737 silver_lag_s=93.4
+      t=  270s kafka_lag=12273 silver_lag_s=59.5
+      t=  285s kafka_lag=10470 silver_lag_s=74.8
+    LAG rate-400: kafka_lag: first=0 median=12334 max=23937 last=10470 slope/min=+1094.0 third1_med=9073 third3_med=11505 | silver_lag_s: first=216.3 median=93.0 max=262.7 last=74.8 slope/min=-28.1 third1_med=224.5 third3_med=76.3
+  rate-400 RECONCILE PASS: 0 difference on all tables
+  rate-400 silver caught up 125 s after the simulator stopped

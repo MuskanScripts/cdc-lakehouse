@@ -11,3 +11,8 @@ derby.log
 dbt/.user.yml
 # created empty by `dbt deps` (no packages)
 dbt/dbt_packages/
+
+# Week 6 benchmark scratch files
+chaos/.bench_q2_range
+bench/.sampler_*.log
+bench/.rate_*.log
