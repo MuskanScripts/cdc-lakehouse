@@ -139,3 +139,24 @@ stopped.
 **Compared with earlier weeks.** Week 2 wrote "200/s is close to this machine's limit", when silver
 batches were 10-12 s against a 10 s trigger. With batches running back to back (ADR-034) silver
 absorbs more per batch, so the limit moved to bronze's CPU share.
+
+## 4. Fresh clone, README quick start only (ADR-036)
+
+The main stack was stopped with `make down` (volumes kept). The repo was cloned to
+`/tmp/fresh-clone` and run with `COMPOSE_PROJECT_NAME=fresh` (separate volumes), following only the
+quick start. Log: `bench/fresh_clone.log`.
+
+| step | elapsed |
+|---|---|
+| `git clone` | 0 s |
+| `make up` done (connector registered) | 1 min 24 s |
+| `make stream-up`, `make gold-up` done | 1 min 29 s |
+| dashboard live (gold published, orders > 0, no red banner, DQ PASS) | **4 min 1 s** |
+| simulator done (300 s at 50/s) | 6 min 37 s |
+| `make reconcile WAIT=300`: PASS, 0 difference on all 5 tables (2,037 orders) | 7 min 1 s |
+| `make test`: 30 + 12 passed | **10 min 17 s** |
+
+The Docker image cache was warm (same machine). The volumes were new, so Postgres was initialised
+from `init.sql` and the Spark jars were downloaded into an empty Ivy cache. The **first attempt
+failed**: every gold build errored on `coupon_code`, a column that only the Week 3 drift drill
+creates. It was fixed (ADR-036) and the timings above are from a second, completely new clone.

@@ -1,0 +1,64 @@
+[+0s 04:09:24] main stack: make down (volumes kept)
+docker compose --profile sim --profile stream --profile gold --profile orchestration --profile monitoring --profile ui down
+containers still running: 0
+               total        used        free      shared  buff/cache   available
+Mem:           9.7Gi       663Mi       7.1Gi       2.9Mi       2.1Gi       9.1Gi
+[+0s 04:09:25] START git clone
+[+1s 04:09:26] 1. make up
+
+
+
+
+
+./scripts/register_connector.sh
+waiting for Kafka Connect at http://localhost:8083 ...
+connector 'ecom-postgres' registered
+[+84s 04:10:49]    make up done
+[+84s 04:10:49] 2. make stream-up
+ Container streaming Started 
+[+85s 04:10:50] 3. make gold-up
+
+ Volume fresh_gold_data Creating 
+ Volume fresh_gold_data Created 
+[+89s 04:10:54]    gold-up done
+[+89s 04:10:54] 4. make simulate RATE=50 DURATION=300 (background, as in a 2nd terminal)
+[+241s 04:13:26] LIVE: dashboard renders with orders
+2026-11-24 04:13:22.039 WARNING streamlit.runtime.scriptrunner_utils.script_run_context: Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+(no red banner: last build OK and gold fresh)
+Net revenue, 60 min                      ₹29,865,233
+Orders, 60 min                           624
+Refund rate, 60 min (refunds issued / orders placed) 12.2%
+Gold built                               11s ago
+Orders in gold (all time)                624
+Kafka lag (msgs not yet in bronze)       747
+Quarantined rows (decode)                0
+Data quality gate (last cycle)           PASS
+Latest order change in gold              04:12:27
+Page rendered                            04:13:25
+
+last 5 minutes (all cities), refunds by minute issued:
+ hhmm  orders  net_revenue  paid  refunds_issued  refund_pct
+04:12   201.0    6161650.0  62.0              23        11.4
+04:11   417.0   23566852.0 320.0              53        12.7
+04:10     6.0     136731.0   6.0               0         0.0
+[+241s 04:13:26] dbt log tail:
+04:12:35    Compilation Error in model stg_users (models/staging/stg_users.sql)
+04:12:35  Done. PASS=0 WARN=0 ERROR=4 SKIP=25 TOTAL=29
+2026-11-24T04:13:18Z [loop] build OK in 19s, published /data/gold.duckdb | Done. PASS=29 WARN=0 ERROR=0 SKIP=0 TOTAL=29 | DQ PASS | 14 checks in 3.6s
+dashboard HTTP 200
+order_items      3701      224      117
+payments         2106     2221       69
+[+397s 04:16:02] 5. make reconcile WAIT=300
+table         postgres    silver  missing  extra  mismatch  dupes          sum pg    sum silver  result
+users             1101      1101        0      0         0      0                                OK
+products           256       256        0      0         0      0                                OK
+orders            2037      2037        0      0         0      0    190405111.68  190405111.68  OK
+order_items       3584      3584        0      0         0      0                                OK
+payments          2037      2037        0      0         0      0    190405111.68  190405111.68  OK
+RECONCILE PASS: 0 difference on all tables
+[+421s 04:16:26] 6. make test
+30 passed in 166.08s (0:02:46)
+12 passed in 6.78s
+[+617s 04:19:42] END
+connect dashboard dbt kafka minio postgres schema-registry spark streaming 
+fresh_gold_data fresh_ivy_cache fresh_kafka_data fresh_minio_data fresh_pg_data 

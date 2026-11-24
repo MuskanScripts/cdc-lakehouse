@@ -183,6 +183,7 @@ services:
       AWS_ACCESS_KEY_ID: minio
       AWS_SECRET_ACCESS_KEY: minio12345
       PYTHONPATH: /opt/project
+      PYTHONDONTWRITEBYTECODE: "1"   # no root-owned __pycache__ in the bind-mounted repo
       KAFKA_BOOTSTRAP: kafka:29092
       SCHEMA_REGISTRY_URL: http://schema-registry:8081
       S3_ENDPOINT: http://minio:9000
@@ -237,6 +238,7 @@ services:
     working_dir: /dbt
     command: ["bash", "/dbt/run_loop.sh"]
     environment: &gold_env
+      PYTHONDONTWRITEBYTECODE: "1"
       AWS_ACCESS_KEY_ID: minio
       AWS_SECRET_ACCESS_KEY: minio12345
       AWS_ENDPOINT_URL: http://minio:9000

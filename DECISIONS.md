@@ -715,3 +715,24 @@ listing old files (53-86 s per table); OPTIMIZE itself took 10-19 s per bronze t
 **Rejected.** Dropping the silver ZORDER. It costs 3-20 s per table and is harmless, and with the
 key-range MERGE idea (ADR-028) it would start to matter. Reducing the pause by running VACUUM less
 often: it is the next thing to try if 15 minutes a night becomes a problem.
+
+## ADR-036: Fresh-clone test: gold must not depend on a drill having been run
+**What I did.** I stopped the main stack (`make down`, volumes kept), cloned the repo into
+`/tmp/fresh-clone`, and ran only the README quick start with `COMPOSE_PROJECT_NAME=fresh`, so it got
+its own volumes. Script and log: `bench/fresh_clone.log`.
+**What a stranger would have hit.** Every gold build failed with `Referenced column "coupon_code"
+not found`. `stg_orders` selected `coupon_code`, but that column only exists after the Week 3 `make
+drift` drill altered the live table. My own stack had run the drill, so I never saw it. `make
+bad-batch` had the same hidden dependency, because it tagged its rows with `coupon_code`.
+**Fix.** `stg_orders` reads silver `UNION ALL BY NAME` with an empty, typed `coupon_code` row, so the
+column is NULL before the drift and carries real values after it (main stack: 47,806 of 181,727
+orders have one). The bad-batch fix now finds the drill's rows by `total < 0`, which is safe because
+the CHECK constraint forbids negatives at every other time. I also stopped containers from writing
+root-owned `__pycache__` into the bind-mounted repo (`PYTHONDONTWRITEBYTECODE=1`): it made deleting
+the first clone fail.
+**Result after the fix**, on a new clean clone: 4 min 1 s from `git clone` to a live dashboard
+(warm Docker image cache, fresh volumes, so the Spark jars were downloaded again), and 10 min 17 s
+to reconcile PASS (0 difference on all 5 tables) plus 42 passing tests.
+**Lesson.** A schema change made in a drill is part of the schema. Any test I only run on my own
+long-lived stack inherits every manual step I ever did to it. Only a fresh clone shows what the
+repo itself really sets up.

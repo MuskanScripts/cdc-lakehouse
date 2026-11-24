@@ -55,7 +55,9 @@ measurements: [docs/measurements.md](docs/measurements.md). Week 6 benchmarks:
 You need: Docker Engine + Compose v2, `make`, `git`, `curl`, and **about 8 GB of RAM free for
 Docker** (the full stack used 7.1 GiB under load; the core pipeline alone, without Airflow and
 monitoring, about 6). Tested on WSL2 Ubuntu. First run downloads images and Python/Maven
-packages; with a warm Docker cache it took ‹CLONE_TIME› from `git clone` to a live dashboard.
+packages. Measured from a fresh clone with a warm Docker image cache: **4 min 1 s from `git clone`
+to a live dashboard**, 10 min 17 s including the 5-minute simulator run, reconcile and `make test`.
+On a machine without the images, add their download time (several GB).
 
 ```bash
 git clone https://github.com/MuskanScripts/cdc-lakehouse.git && cd cdc-lakehouse
@@ -66,8 +68,10 @@ make gold-up         # 3. dbt build loop (every 30 s, behind the DQ gate) + dash
 make simulate RATE=50 DURATION=300   # 4. 5 minutes of orders/payments/refunds (Ctrl+C stops early)
 ```
 
-Then open **http://localhost:8501**: revenue and orders per minute start moving within about
-1-2 minutes (CDC → bronze → silver → gold). When the simulator has stopped:
+Then open **http://localhost:8501**. Revenue and orders per minute appear about 2-3 minutes after
+the simulator starts (CDC → bronze → silver → gold; 2.5 min in the fresh-clone test). Until silver
+has its first tables, gold builds fail and the page shows a red "Last dbt build FAILED" banner:
+that is expected and clears by itself. When the simulator has stopped:
 
 ```bash
 make reconcile WAIT=300   # 5. Postgres vs silver, every row and column: expect "RECONCILE PASS: 0 difference"
@@ -97,7 +101,7 @@ All measured on one laptop (WSL2, 9.7 GB RAM, Spark `local[4]`); how each was me
 | DQ gate cost | 14 Soda checks in 1.1-3.4 s per gold cycle | `make gold-logs` |
 | Memory, whole stack under load | 7.1 of 9.7 GiB (Spark driver 3.56 of 3.9 GiB) | `make stats` |
 | Tests | 42 unit tests (`make test`); CI: unit + DQ tests + `dbt parse` | [.github/workflows/ci.yml](.github/workflows/ci.yml) |
-| Fresh clone → live dashboard | ‹CLONE_TIME›, following only this quick start | Week 6 fresh-clone test |
+| Fresh clone → live dashboard | **4 min 1 s** (warm image cache); 10 min 17 s to reconcile PASS + 42 tests; found and fixed 1 blocking bug | Week 6 fresh-clone test, `bench/fresh_clone.log` |
 
 ## Failure modes handled
 
@@ -314,5 +318,9 @@ reasoning in [DECISIONS.md](DECISIONS.md).
   `make airflow-up`, which passes the socket's group id (`DOCKER_GID`).
 - **`make drift` says the column already exists**: the drill only means something the first time;
   use `make drift COL=other_name` (or `TBL=products`).
+- **`rm -rf` of the repo says "Permission denied" on `__pycache__`**: files written as root by
+  containers before Week 6. Delete them with
+  `docker run --rm -u 0 -v "$PWD":/r --entrypoint find apache/spark:3.5.3-python3 /r -name __pycache__ -prune -exec rm -rf {} +`.
+  Since Week 6 the containers don't write bytecode (`PYTHONDONTWRITEBYTECODE=1`).
 - **Decimal fields look like `"\u0004Ò"`** in the console consumer: Avro `decimal` is
   encoded as bytes. Spark's `from_avro` decodes it to `DecimalType(12,2)`.

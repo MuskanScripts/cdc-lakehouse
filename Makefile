@@ -59,12 +59,12 @@ spark-smoke:     ## Spark writes/reads a Delta table on MinIO
 psql:            ## open psql on the source DB
 	docker compose exec postgres psql -U ecom -d ecom
 
-test:            ## all unit tests, inside the spark container (has Java + PySpark)
+test:            ## all unit tests, inside the spark container (has Java + PySpark); no root-owned .pyc in the repo
 	docker compose up -d spark
-	docker compose exec -T -e PYTHONPATH=/opt/project:/opt/spark/python:/opt/spark/python/lib/py4j-0.10.9.7-src.zip spark \
+	docker compose exec -T -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONPATH=/opt/project:/opt/spark/python:/opt/spark/python/lib/py4j-0.10.9.7-src.zip spark \
 	  bash -c "pip install -q pytest faker 'psycopg[binary]' 2>&1 | tail -1; cd /opt/project && python3 -m pytest -q -p no:cacheprovider tests"
 	@echo "--- data quality tests (Soda venv in the gold image)"
-	docker compose --profile gold run --rm --no-deps -T dbt /opt/soda/bin/python -m pytest -q -p no:cacheprovider /quality/tests
+	docker compose --profile gold run --rm --no-deps -T -e PYTHONDONTWRITEBYTECODE=1 dbt /opt/soda/bin/python -m pytest -q -p no:cacheprovider /quality/tests
 
 stream-up:       ## start bronze + silver streaming (one Spark driver, restarts on failure)
 	docker compose --profile stream up -d streaming

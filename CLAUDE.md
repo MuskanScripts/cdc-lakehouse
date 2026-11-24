@@ -40,6 +40,10 @@ quick start), week-by-week numbers moved to `docs/measurements.md`; CI in `.gith
 (unit + DQ tests + dbt parse); `docs/demo-script.md`, blog/LinkedIn drafts; screenshots go in
 `docs/img/`. Makefile: `BENCH_RATE` because the global `RATE ?= 200` used to override per-target
 defaults (`make chaos` too). The laptop can sleep mid-run: check `date -u` against the logs.
+Fresh-clone test (ADR-036): first try failed (gold needed `orders.coupon_code`, which only `make drift`
+creates; fixed with UNION ALL BY NAME); after the fix clone → live dashboard 4 min 1 s, → reconcile +
+tests 10 min 17 s. Containers set PYTHONDONTWRITEBYTECODE=1 (root-owned __pycache__ in the repo).
+Open: `git push` (needs Rohit), screenshots in docs/img/, record the demo.
 **Week 5 (done):** gold cycle = `dbt/cycle.sh` (build → Soda DQ gate → publish, flock), run by the
 30 s loop and by Airflow `dbt_run` (ADR-029). Soda lives in venv `/opt/soda` in the gold image
 (ADR-030); freshness/volume only warn. Airflow (`make airflow-up`, :8088 admin/admin, profile
